@@ -16,8 +16,8 @@ func (m Model) View() string {
 	body.WriteString("\n")
 	body.WriteString(helpStyle.Render(m.breadcrumb()))
 	body.WriteString("\n\n")
-	if m.availableUpdate.Version != "" && m.stage != stageUpdatePrompt {
-		body.WriteString(lipgloss.NewStyle().Width(max(1, width-4)).Align(lipgloss.Right).Render(m.updateNotification()))
+	if notification := m.notificationView(); notification != "" && m.stage != stageUpdatePrompt {
+		body.WriteString(lipgloss.NewStyle().Width(max(1, width-4)).Align(lipgloss.Right).Render(notification))
 		body.WriteString("\n\n")
 	}
 
@@ -252,6 +252,22 @@ func (m Model) updateNotification() string {
 		BorderForeground(accent).
 		Padding(0, 1).
 		Render(message)
+}
+
+func (m Model) notificationView() string {
+	if m.toastMessage != "" && m.toastWidth > 0 {
+		runes := []rune(m.toastMessage)
+		start := max(0, len(runes)-m.toastWidth)
+		return lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accent).
+			Padding(0, 1).
+			Render(string(runes[start:]))
+	}
+	if m.availableUpdate.Version != "" {
+		return m.updateNotification()
+	}
+	return ""
 }
 
 func (m Model) sourcesView() string {

@@ -61,8 +61,32 @@ func TestUpdateCheckNotifiesWithoutInterruptingAndInstalls(t *testing.T) {
 	message = model.installUpdate()()
 	updated, _ = model.Update(message)
 	model = updated.(Model)
-	if !service.installed || model.err != nil || !strings.Contains(model.status, "restart") {
-		t.Fatalf("update result = installed:%t err:%v status:%q", service.installed, model.err, model.status)
+	if !service.installed || model.err != nil || !strings.Contains(model.toastMessage, "restart") {
+		t.Fatalf("update result = installed:%t err:%v toast:%q", service.installed, model.err, model.toastMessage)
+	}
+}
+
+func TestUpdateCompletionSlidesInAndDismisses(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = true
+	model.availableUpdate = appupdate.Release{Version: "v0.3.1"}
+	model.updateReturn = stageSources
+
+	updated, command := model.Update(updateInstalledMsg{})
+	model = updated.(Model)
+	if command == nil || model.toastMessage == "" || model.status != "" {
+		t.Fatalf("completion notification = toast:%q status:%q", model.toastMessage, model.status)
+	}
+	updated, command = model.Update(toastTickMsg{id: model.toastID})
+	model = updated.(Model)
+	if command == nil || model.toastWidth == 0 || model.notificationView() == "" {
+		t.Fatalf("sliding notification not visible: width=%d\n%s", model.toastWidth, model.View())
+	}
+	updated, _ = model.Update(toastDismissMsg{id: model.toastID})
+	model = updated.(Model)
+	if model.toastMessage != "" {
+		t.Fatalf("notification was not dismissed: %q", model.toastMessage)
 	}
 }
 
@@ -548,6 +572,44 @@ func TestClosingResumedPlaybackReturnsHome(t *testing.T) {
 	}
 }
 
+func TestFinishingResumedPlaybackReturnsHomeAndClearsResumeItem(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	playback := appconfig.ContinueEntry{
+		Title: "Even the Student Council Has Its Holes!", SourceID: "source",
+		MediaURL: "media", EpisodeURL: "episode-4", EpisodeNumber: "4",
+		Position: 976, Duration: 1420,
+	}
+	if err := store.SaveContinue(playback); err != nil {
+		t.Fatal(err)
+	}
+	model := New(nil, store, "", "mpv")
+	model.stage = stageStreams
+	model.playbackReturnHome = true
+	model.continueWatching = []appconfig.ContinueEntry{playback}
+	model.refreshResumeWatching()
+
+	updated, _ := model.Update(playerFinishedMsg{
+		entry:    &playback,
+		progress: &player.Progress{Position: 1349, Duration: 1420, Reason: "eof"},
+	})
+	model = updated.(Model)
+
+	if model.stage != stageSources {
+		t.Fatalf("stage = %d, want home (%d)", model.stage, stageSources)
+	}
+	if len(model.resumeWatchingList.Items()) != 0 {
+		t.Fatalf("finished episode remains resumable: %#v", model.resumeWatchingList.Items())
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].Position != 1349 {
+		t.Fatalf("persisted playback = %#v", loaded.ContinueWatching)
+	}
+}
+
 func TestClosingEpisodePlaybackReturnsEpisodeSelector(t *testing.T) {
 	t.Parallel()
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
@@ -802,8 +864,8 @@ func TestResumeWatchingFiltersCompletedPlayback(t *testing.T) {
 	model := New(nil, nil, "", "mpv")
 	model.continueWatching = []appconfig.ContinueEntry{
 		{Title: "Unknown progress"},
-		{Title: "Still watching", Position: 98.9, Duration: 100},
-		{Title: "Completed", Position: 99, Duration: 100},
+		{Title: "Still watching", Position: 89.9, Duration: 100},
+		{Title: "Completed", Position: 90, Duration: 100},
 		{Title: "Past end", Position: 101, Duration: 100},
 	}
 	model.refreshResumeWatching()

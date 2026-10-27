@@ -108,7 +108,7 @@ func runtimeDirectory() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(directory, "anymex-cli", "runtime"), nil
+	return filepath.Join(directory, "animix", "runtime"), nil
 }
 
 func currentSelection() (string, string, bool) {

@@ -41,7 +41,7 @@ func (c *Client) Fetch(repoURL, itemType string) ([]Extension, error) {
 		return nil, err
 	}
 	request.Header.Set("Accept", "application/json, application/octet-stream")
-	request.Header.Set("User-Agent", "AnymeX-CLI")
+	request.Header.Set("User-Agent", "AnimiX")
 	response, err := c.http.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("fetch repository: %w", err)

@@ -204,7 +204,7 @@ func DefaultPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(directory, "anymex-cli", "config.toml"), nil
+	return filepath.Join(directory, "animix", "config.toml"), nil
 }
 
 func NewStore(path string) *Store {

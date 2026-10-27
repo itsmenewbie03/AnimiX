@@ -93,7 +93,7 @@ func TestPathUsesSourceAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(configHome, "anymex-cli", "runtime", SourceUpstream, "v2.7.3", assetName)
+	want := filepath.Join(configHome, "animix", "runtime", SourceUpstream, "v2.7.3", assetName)
 	if path != want {
 		t.Fatalf("Path = %q, want %q", path, want)
 	}

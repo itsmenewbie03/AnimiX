@@ -35,7 +35,7 @@ func (i *Installer) Install(ctx context.Context, extension Extension, destinatio
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", "AnymeX-CLI")
+	request.Header.Set("User-Agent", "AnimiX")
 	response, err := i.http.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("download extension: %w", err)

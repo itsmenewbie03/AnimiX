@@ -87,12 +87,12 @@ Here **fork** means our fork at
 Installs are isolated by source and version:
 
 ```text
-~/.config/anymex-cli/runtime/<source>/<version>/anymex_desktop_runtime.jar
+~/.config/animix/runtime/<source>/<version>/anymex_desktop_runtime.jar
 ```
 
 The most recent install becomes the default for plain `go run .`; pass
 `--runtime` to override it. The selection is recorded in
-`~/.config/anymex-cli/runtime/current`.
+`~/.config/animix/runtime/current`.
 
 After installing, launch AnimiX with:
 
@@ -120,7 +120,7 @@ opening the TUI?
 go run . --diagnose
 ```
 
-AnimiX stores user-editable settings in `~/.config/anymex-cli/config.toml` and
+AnimiX stores user-editable settings in `~/.config/animix/config.toml` and
 keeps app-managed history, credentials, mappings, and source choices in
 `state.json`. Existing combined TOML or legacy `config.json` files are split
 automatically and retained as `.bak` files. Open only the settings file in
@@ -161,18 +161,18 @@ CI runs tests, `go vet`, and a build on every push and pull request. Pushing a
 Use the arrow keys or `j`/`k` to move, `Enter` to select, `Esc` to go back, and
 `q` to quit. Handy shortcuts:
 
-| Key | What it does |
-| --- | --- |
-| `h` / `l`, `Tab`, `←` / `→`, `1` / `2` | Switch between Anime and Manga |
-| `w` | Resume your most recent local playback |
-| `d` or `/` | Open Discover and search with an installed source |
-| `t` | Connect or manage AniList tracking |
-| `r` | Manage extension repositories |
-| `space` | Toggle **Remember server** on the stream screen |
-| `a` / `s` | Search an alternative title / change source |
-| `Ctrl+O` | Open the source domain or AniList authorization page |
-| `c` | Start Cloudflare recovery manually |
-| `x` | Sign out of AniList from the library screen |
+| Key                                    | What it does                                         |
+| -------------------------------------- | ---------------------------------------------------- |
+| `h` / `l`, `Tab`, `←` / `→`, `1` / `2` | Switch between Anime and Manga                       |
+| `w`                                    | Resume your most recent local playback               |
+| `d` or `/`                             | Open Discover and search with an installed source    |
+| `t`                                    | Connect or manage AniList tracking                   |
+| `r`                                    | Manage extension repositories                        |
+| `space`                                | Toggle **Remember server** on the stream screen      |
+| `a` / `s`                              | Search an alternative title / change source          |
+| `Ctrl+O`                               | Open the source domain or AniList authorization page |
+| `c`                                    | Start Cloudflare recovery manually                   |
+| `x`                                    | Sign out of AniList from the library screen          |
 
 ## 🏠 Home, Episodes & History
 

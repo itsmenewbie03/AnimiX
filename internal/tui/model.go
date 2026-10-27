@@ -60,6 +60,7 @@ const (
 	cloudflareDetails
 	cloudflareVideos
 	cloudflarePages
+	cloudflarePlayback
 )
 
 type homeFocus uint8
@@ -130,6 +131,8 @@ type Model struct {
 	cloudflareOperation  cloudflareOperation
 	cloudflareReturn     stage
 	rememberStream       bool
+	playbackReturnHome   bool
+	pendingPlayback      *appconfig.ContinueEntry
 	malID                int
 }
 
@@ -491,6 +494,25 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.videos = msg.items
+		if m.pendingPlayback != nil {
+			entry := *m.pendingPlayback
+			m.pendingPlayback = nil
+			if len(msg.items) == 0 {
+				m.err = fmt.Errorf("no streams found while resuming %s", entry.EpisodeName)
+				return m, nil
+			}
+			index := matchingVideoIndex(msg.items, entry.Quality)
+			video := msg.items[index]
+			entry.VideoURL, entry.Quality, entry.Headers = video.URL, video.Quality, video.Headers
+			entry.Subtitles = entry.Subtitles[:0]
+			for _, subtitle := range video.Subtitles {
+				if subtitle.File != "" {
+					entry.Subtitles = append(entry.Subtitles, subtitle.File)
+				}
+			}
+			m.stage, m.cursor = stageStreams, index
+			return m.startPlayer(video, entry)
+		}
 		m.stage, m.cursor = stageStreams, 0
 		m.rememberStream = m.hasStreamPreference()
 		if index, ok := m.automaticVideoIndex(msg.items); ok {
@@ -510,17 +532,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage, m.cursor = stagePages, 0
 		return m, nil
 	case playerFinishedMsg:
+		var syncCommand tea.Cmd
 		if msg.err != nil {
 			m.err = fmt.Errorf("player: %w", msg.err)
-		} else {
-			m.status = "Playback finished"
 		}
-		var syncCommand tea.Cmd
 		if msg.entry != nil && msg.progress != nil && msg.progress.Duration > 0 {
+			progress := *msg.progress
 			entry := *msg.entry
-			entry.Position, entry.Duration = msg.progress.Position, msg.progress.Duration
+			entry.Position, entry.Duration = progress.Position, progress.Duration
 			entry.UpdatedAt = time.Now().UnixMilli()
-			if msg.progress.Position/msg.progress.Duration >= watchedThreshold {
+			if progress.Position/progress.Duration >= watchedThreshold {
 				entry.WatchedEpisodes = appendUniqueString(entry.WatchedEpisodes, normalizedEpisodeNumber(entry.EpisodeNumber))
 			}
 			if err := m.configStore.SaveContinue(entry); err != nil {
@@ -528,7 +549,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.continueWatching = prependContinue(m.continueWatching, entry)
 				m.refreshResumeWatching()
-				if len(m.details.Episodes) > 0 {
+				if !m.playbackReturnHome && len(m.details.Episodes) > 0 {
 					selectedIndex := m.episodeList.Index()
 					m.setEpisodeItems()
 					m.episodeList.Select(min(selectedIndex, len(m.details.Episodes)-1))
@@ -537,7 +558,37 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			syncCommand = m.syncAniListPlayback(entry, *msg.progress)
+			percentage := progress.Position / progress.Duration * 100
+			switch {
+			case progress.ProxyFailure:
+				m.status = fmt.Sprintf("The local stream proxy failed at %.0f%% — refresh Cloudflare credentials to resume", percentage)
+				m.pendingPlayback = &entry
+				return m.beginCloudflareRecovery(cloudflarePlayback)
+			case msg.err != nil:
+			case isEarlyPlaybackStop(progress):
+				m.status = fmt.Sprintf("Playback stopped early at %.0f%% — refresh Cloudflare credentials to resume", percentage)
+				m.pendingPlayback = &entry
+				m.cloudflareOperation = cloudflarePlayback
+				return m.beginCloudflareRecovery(cloudflarePlayback)
+			case progress.Reason == "quit" && percentage < watchedThreshold*100:
+				m.status = fmt.Sprintf("Playback stopped at %.0f%%", percentage)
+			default:
+				m.status = "Playback finished"
+			}
+			syncCommand = m.syncAniListPlayback(entry, progress)
+		} else if msg.err == nil {
+			m.status = "Playback finished"
+		} else if msg.entry != nil && isLocalProxyURL(msg.entry.VideoURL) {
+			entry := *msg.entry
+			m.pendingPlayback = &entry
+			m.status = "The local stream proxy failed — refresh Cloudflare credentials to resume"
+			return m.beginCloudflareRecovery(cloudflarePlayback)
+		}
+		if m.playbackReturnHome {
+			m.stage = stageSources
+			m.homeFocus = homeFocusResumeWatching
+			m.cursor = 0
+			m.playbackReturnHome = false
 		}
 		return m, syncCommand
 	case repositoriesMsg:
@@ -1316,6 +1367,7 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	video := m.videos[m.cursor]
+	m.playbackReturnHome = false
 	entry := appconfig.ContinueEntry{
 		Title:         firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle()),
 		SourceID:      m.selectedSource.ID,
@@ -1330,6 +1382,10 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 		UpdatedAt:     time.Now().UnixMilli(),
 	}
 	entry.WatchedEpisodes = m.watchedEpisodesFor(entry.SourceID, entry.MediaURL)
+	// mpv no longer writes watch-later state, so carry over any saved position
+	// for this exact episode ourselves. Otherwise picking an episode from the
+	// stream list restarts it from the beginning.
+	entry.Position, entry.Duration = m.savedEpisodePosition(entry)
 	if m.resolvingEpisode != nil {
 		entry.AniListEntryID = m.resolvingEpisode.ID
 		entry.AniListMediaID = m.resolvingEpisode.MediaID
@@ -1353,9 +1409,9 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
-	video := catalog.Video{URL: entry.VideoURL, Quality: entry.Quality, Headers: entry.Headers}
-	for _, subtitle := range entry.Subtitles {
-		video.Subtitles = append(video.Subtitles, catalog.Track{File: subtitle})
+	m.playbackReturnHome = true
+	if entry.Duration > 0 && entry.Position/entry.Duration >= 0.99 {
+		entry.Position = 0
 	}
 	entry.UpdatedAt = time.Now().UnixMilli()
 	if err := m.configStore.SaveContinue(entry); err != nil {
@@ -1364,11 +1420,52 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 	}
 	m.continueWatching = prependContinue(m.continueWatching, entry)
 	m.refreshResumeWatching()
-	return m.startPlayer(video, entry)
+	return m.resumePlayback(entry)
+}
+
+func (m Model) resumePlayback(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
+	source, ok := m.sourceByID(entry.SourceID)
+	if !ok {
+		m.err = fmt.Errorf("source %s is not loaded; cannot refresh the saved stream", entry.SourceName)
+		return m, nil
+	}
+	m.selectedSource = source
+	m.selectedMedia = catalog.Media{Title: entry.Title, URL: entry.MediaURL}
+	m.selectedEpisode = catalog.Episode{
+		URL: entry.EpisodeURL, Name: entry.EpisodeName, EpisodeNumber: entry.EpisodeNumber,
+	}
+	m.pendingPlayback = &entry
+	m.loading, m.err = true, nil
+	// Keep Home's height stable while the selected Resume Watching row carries
+	// the spinner in its highlight border.
+	m.status = ""
+	return m, tea.Batch(m.spinner.Tick, m.loadVideos())
+}
+
+func (m Model) sourceByID(id string) (catalog.Source, bool) {
+	for _, source := range m.sources {
+		if source.ID == id {
+			return source, true
+		}
+	}
+	return catalog.Source{}, false
+}
+
+func matchingVideoIndex(videos []catalog.Video, quality string) int {
+	for index, video := range videos {
+		if video.Quality == quality || streamMatches(video, quality) {
+			return index
+		}
+	}
+	return 0
+}
+
+func isLocalProxyURL(value string) bool {
+	return strings.HasPrefix(value, "http://localhost:") || strings.HasPrefix(value, "http://127.0.0.1:")
 }
 
 func (m Model) startPlayer(video catalog.Video, entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
-	session, err := player.MPVSession(m.player, video, m.skipChapters(entry.Duration)...)
+	session, err := player.MPVSession(m.player, video, entry.Position, m.skipChapters(entry.Duration)...)
 	if err != nil {
 		m.err = err
 		return m, nil
@@ -1843,6 +1940,30 @@ func (m Model) watchedEpisodesFor(sourceID, mediaURL string) []string {
 	return nil
 }
 
+// savedEpisodePosition returns the saved playback position and duration for the
+// episode described by entry, when a Continue Watching record still refers to
+// the same episode and it was not effectively finished. Continue Watching keeps
+// a single record per media, so this only resumes the episode last watched.
+func (m Model) savedEpisodePosition(entry appconfig.ContinueEntry) (float64, float64) {
+	for _, saved := range m.continueWatching {
+		if saved.SourceID != entry.SourceID || saved.MediaURL != entry.MediaURL {
+			continue
+		}
+		if entry.EpisodeURL != "" && saved.EpisodeURL != "" {
+			if saved.EpisodeURL != entry.EpisodeURL {
+				continue
+			}
+		} else if normalizedEpisodeNumber(saved.EpisodeNumber) != normalizedEpisodeNumber(entry.EpisodeNumber) {
+			continue
+		}
+		if saved.Position <= 0 || saved.Duration <= 0 || saved.Position/saved.Duration >= 0.99 {
+			return 0, 0
+		}
+		return saved.Position, saved.Duration
+	}
+	return 0, 0
+}
+
 func (m Model) localWatchedEpisodes() []string {
 	mediaURL := firstNonEmpty(m.details.URL, m.selectedMedia.URL)
 	return m.watchedEpisodesFor(m.selectedSource.ID, mediaURL)
@@ -2208,6 +2329,16 @@ func (m Model) syncAniListPlayback(playback appconfig.ContinueEntry, progress pl
 
 const watchedThreshold = 0.90
 
+// isEarlyPlaybackStop reports a clean end-of-file event well before the runtime
+// reported duration. mpv uses "eof" for a finished file and "quit"/"stop" when
+// the user closes it, so only the former is treated as an interrupted stream.
+func isEarlyPlaybackStop(progress player.Progress) bool {
+	if progress.Duration <= 0 || progress.Position < 5 {
+		return false
+	}
+	return progress.Position/progress.Duration < watchedThreshold && progress.Reason == "eof"
+}
+
 func aniListPlaybackTarget(playback appconfig.ContinueEntry, progress player.Progress, currentProgress int) (anilist.Entry, bool) {
 	if progress.Duration <= 0 || progress.Position/progress.Duration < watchedThreshold {
 		return anilist.Entry{}, false
@@ -2338,6 +2469,11 @@ func (m Model) retryCloudflareOperation() tea.Cmd {
 		return tea.Batch(m.spinner.Tick, m.loadVideos())
 	case cloudflarePages:
 		return tea.Batch(m.spinner.Tick, m.loadPages())
+	case cloudflarePlayback:
+		if m.pendingPlayback == nil {
+			return nil
+		}
+		return tea.Batch(m.spinner.Tick, m.loadVideos())
 	default:
 		return nil
 	}

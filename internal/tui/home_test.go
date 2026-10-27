@@ -30,8 +30,10 @@ func (service *fakeUpdateService) Check(context.Context, string) (appupdate.Rele
 	return service.release, nil
 }
 
-func (service *fakeUpdateService) Install(context.Context, appupdate.Release) error {
+func (service *fakeUpdateService) InstallWithProgress(_ context.Context, _ appupdate.Release, report func(appupdate.ProbeProgress)) error {
 	service.installed = true
+	report(appupdate.ProbeProgress{Phase: appupdate.ProbeDownloading, Downloaded: 9, Total: 10})
+	report(appupdate.ProbeProgress{Phase: appupdate.ProbeComplete})
 	return nil
 }
 
@@ -42,65 +44,28 @@ func TestUpdateCheckNotifiesWithoutInterruptingAndInstalls(t *testing.T) {
 	model.loading = false
 
 	message := model.checkForUpdates()()
-	updated, _ := model.Update(message)
+	updated, notificationCommand := model.Update(message)
 	model = updated.(Model)
-	if model.stage != stageSources || !strings.Contains(model.View(), "Update available") || !strings.Contains(model.View(), "u install AnimiX v0.2.0") {
+	if notificationCommand == nil || model.stage != stageSources || !strings.Contains(model.View(), "u install AnimiX v0.2.0") {
 		t.Fatalf("non-intrusive update notification not shown: stage=%d\n%s", model.stage, model.View())
 	}
 
 	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	model = updated.(Model)
-	if command == nil || model.stage != stageUpdatePrompt || model.loading {
+	if command == nil || model.stage != stageUpdatePrompt || !model.loading {
 		t.Fatalf("update screen not opened: stage=%d loading=%t", model.stage, model.loading)
 	}
-	updated, command = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, command = model.Update(updateEventMsg{progress: appupdate.ProbeProgress{
+		Phase: appupdate.ProbeDownloading, Downloaded: 9, Total: 10,
+	}})
 	model = updated.(Model)
-	if command == nil || !model.loading {
-		t.Fatal("update installer was not started")
+	if command == nil || model.updatePercent != 0.81 {
+		t.Fatalf("measured update progress = %.2f", model.updatePercent)
 	}
-	message = model.installUpdate()()
-	updated, _ = model.Update(message)
+	updated, notificationCommand = model.Update(updateEventMsg{done: true})
 	model = updated.(Model)
-	if !service.installed || model.err != nil || !strings.Contains(model.toastMessage, "restart") {
-		t.Fatalf("update result = installed:%t err:%v toast:%q", service.installed, model.err, model.toastMessage)
-	}
-}
-
-func TestUpdateCompletionSlidesInAndDismisses(t *testing.T) {
-	t.Parallel()
-	model := New(nil, nil, "", "mpv")
-	model.loading = true
-	model.availableUpdate = appupdate.Release{Version: "v0.3.1"}
-	model.updateReturn = stageSources
-
-	updated, command := model.Update(updateInstalledMsg{})
-	model = updated.(Model)
-	if command == nil || model.toastMessage == "" || model.status != "" {
-		t.Fatalf("completion notification = toast:%q status:%q", model.toastMessage, model.status)
-	}
-	updated, command = model.Update(toastTickMsg{id: model.toastID})
-	model = updated.(Model)
-	if command == nil || model.toastWidth == 0 || model.notificationView() == "" {
-		t.Fatalf("sliding notification not visible: width=%d\n%s", model.toastWidth, model.View())
-	}
-	updated, _ = model.Update(toastDismissMsg{id: model.toastID})
-	model = updated.(Model)
-	if model.toastMessage != "" {
-		t.Fatalf("notification was not dismissed: %q", model.toastMessage)
-	}
-}
-
-func TestUpdateScreenCanReturnWithoutDismissingNotification(t *testing.T) {
-	t.Parallel()
-	model := New(nil, nil, "", "mpv")
-	model.loading = false
-	model.stage = stageUpdatePrompt
-	model.updateReturn = stageSources
-	model.availableUpdate = appupdate.Release{Version: "v0.2.0"}
-	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-	model = updated.(Model)
-	if model.stage != stageSources || model.availableUpdate.Version != "v0.2.0" {
-		t.Fatalf("returned update state = %#v", model)
+	if notificationCommand == nil || model.stage != stageSources || model.loading || model.availableUpdate.Version != "" {
+		t.Fatalf("completed update state = stage:%d loading:%t release:%q", model.stage, model.loading, model.availableUpdate.Version)
 	}
 }
 

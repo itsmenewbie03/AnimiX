@@ -6,19 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const (
-	latestReleaseURL = "https://api.github.com/repos/itsmenewbie03/AnimiX/releases/latest"
-	installerURL     = "https://raw.githubusercontent.com/itsmenewbie03/AnimiX/%s/install.sh"
-)
+const latestReleaseURL = "https://api.github.com/repos/itsmenewbie03/AnimiX/releases/latest"
 
 type Release struct {
 	Version string
@@ -28,14 +21,14 @@ type Release struct {
 type Client struct {
 	httpClient *http.Client
 	apiURL     string
-	installURL string
+	assetURL   string
 }
 
 func NewClient() *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		apiURL:     latestReleaseURL,
-		installURL: installerURL,
+		assetURL:   releaseAssetURL,
 	}
 }
 
@@ -68,51 +61,6 @@ func (c *Client) Check(ctx context.Context, current string) (Release, error) {
 		return Release{}, nil
 	}
 	return Release{Version: payload.TagName, URL: payload.HTMLURL}, nil
-}
-
-func (c *Client) Install(ctx context.Context, release Release) error {
-	if runtime.GOOS == "windows" {
-		return fmt.Errorf("automatic updates require a POSIX shell; install %s manually", release.URL)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(c.installURL, release.Version), nil)
-	if err != nil {
-		return err
-	}
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("download installer: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download installer: HTTP %s", response.Status)
-	}
-	directory, err := os.MkdirTemp("", "animix-update-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(directory)
-	script := filepath.Join(directory, "install.sh")
-	file, err := os.OpenFile(script, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o700)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(file, io.LimitReader(response.Body, 1<<20))
-	closeErr := file.Close()
-	if copyErr != nil {
-		return copyErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	command := exec.CommandContext(ctx, "bash", script, "--version", release.Version, "--dir", filepath.Dir(executable))
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("install %s: %w: %s", release.Version, err, strings.TrimSpace(string(output)))
-	}
-	return nil
 }
 
 func compareVersions(left, right string) int {

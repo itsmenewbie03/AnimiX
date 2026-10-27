@@ -20,6 +20,7 @@ import (
 	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
+	"github.com/itsmenewbie03/animix/internal/notification"
 	"github.com/itsmenewbie03/animix/internal/player"
 	"github.com/itsmenewbie03/animix/internal/repository"
 	appupdate "github.com/itsmenewbie03/animix/internal/update"
@@ -142,14 +143,15 @@ type Model struct {
 	currentVersion       string
 	availableUpdate      appupdate.Release
 	updateReturn         stage
-	toastMessage         string
-	toastWidth           int
-	toastID              int
+	notifier             notification.Model
+	updateEvents         chan updateEventMsg
+	updateState          appupdate.ProbeProgress
+	updatePercent        float64
 }
 
 type UpdateService interface {
 	Check(context.Context, string) (appupdate.Release, error)
-	Install(context.Context, appupdate.Release) error
+	InstallWithProgress(context.Context, appupdate.Release, func(appupdate.ProbeProgress)) error
 }
 
 type Option func(*Model)
@@ -317,9 +319,11 @@ type (
 		release appupdate.Release
 		err     error
 	}
-	updateInstalledMsg   struct{ err error }
-	toastTickMsg         struct{ id int }
-	toastDismissMsg      struct{ id int }
+	updateEventMsg struct {
+		progress appupdate.ProbeProgress
+		err      error
+		done     bool
+	}
 	cloudflareAppliedMsg struct {
 		credential appconfig.SourceCredential
 		err        error
@@ -420,6 +424,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		loading:              true,
 		spinner:              spin,
 		updateProgress:       updateProgress,
+		notifier:             notification.New(accent),
 		search:               input,
 		repositoryInput:      repoInput,
 		extensionSearch:      extSearch,
@@ -813,35 +818,33 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		// Update checks are best-effort and should never block startup.
 		if msg.err == nil && msg.release.Version != "" {
 			m.availableUpdate = msg.release
+			return m, m.notifier.Notify(notification.Notice{
+				ID: "update-available", Title: "Update available",
+				Message: msg.release.Version + " • press u to install",
+				Level:   notification.Info, Timeout: -1,
+			})
 		}
 		return m, nil
-	case updateInstalledMsg:
-		m.loading, m.err = false, msg.err
-		if msg.err != nil {
-			return m, nil
+	case updateEventMsg:
+		if msg.done {
+			m.loading = false
+			m.stage = m.updateReturn
+			if msg.err != nil {
+				m.err = msg.err
+				return m, m.notifier.Notify(notification.Notice{
+					Title: "Update failed", Message: msg.err.Error(), Level: notification.Error,
+				})
+			}
+			version := m.availableUpdate.Version
+			m.availableUpdate = appupdate.Release{}
+			m.updatePercent = 1
+			return m, m.notifier.Notify(notification.Notice{
+				Title: "Update installed", Message: version + " • restart AnimiX to use it", Level: notification.Success,
+			})
 		}
-		m.status = ""
-		m.toastMessage = "AnimiX updated to " + m.availableUpdate.Version + "; restart to use it"
-		m.toastWidth = 0
-		m.toastID++
-		m.stage = m.updateReturn
-		m.availableUpdate = appupdate.Release{}
-		return m, tea.Batch(m.updateProgress.SetPercent(1), m.slideToast())
-	case toastTickMsg:
-		if msg.id != m.toastID || m.toastMessage == "" {
-			return m, nil
-		}
-		m.toastWidth = min(len([]rune(m.toastMessage)), m.toastWidth+4)
-		if m.toastWidth < len([]rune(m.toastMessage)) {
-			return m, m.slideToast()
-		}
-		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return toastDismissMsg{id: msg.id} })
-	case toastDismissMsg:
-		if msg.id == m.toastID {
-			m.toastMessage = ""
-			m.toastWidth = 0
-		}
-		return m, nil
+		m.updateState = msg.progress
+		m.updatePercent = updateOverallProgress(msg.progress)
+		return m, m.waitUpdateEvent()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -871,7 +874,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.alternativeTitle, cmd = m.alternativeTitle.Update(message)
 		return m, cmd
 	}
-	return m, nil
+	return m, m.notifier.Update(message)
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -881,22 +884,14 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.loading {
 		return m, nil
 	}
-	if m.stage == stageUpdatePrompt {
-		switch strings.ToLower(key.String()) {
-		case "enter", "i":
-			m.loading, m.err = true, nil
-			return m, tea.Batch(m.updateProgress.SetPercent(0.15), m.installUpdate())
-		case "esc":
-			m.stage = m.updateReturn
-			return m, nil
-		}
-		return m, nil
-	}
 	if strings.ToLower(key.String()) == "u" && m.availableUpdate.Version != "" && !m.acceptsTextInput() {
 		m.updateReturn = m.stage
 		m.stage = stageUpdatePrompt
-		m.err = nil
-		return m, m.updateProgress.SetPercent(0)
+		m.loading, m.err = true, nil
+		m.updateState, m.updatePercent = appupdate.ProbeProgress{}, 0
+		m.updateEvents = make(chan updateEventMsg)
+		m.notifier.Hide("update-available")
+		return m, tea.Batch(m.installUpdate(), m.waitUpdateEvent())
 	}
 	if m.stage == stageCloudflareCookie {
 		switch key.String() {
@@ -1343,11 +1338,6 @@ func (m Model) acceptsTextInput() bool {
 	default:
 		return false
 	}
-}
-
-func (m Model) slideToast() tea.Cmd {
-	id := m.toastID
-	return tea.Tick(20*time.Millisecond, func(time.Time) tea.Msg { return toastTickMsg{id: id} })
 }
 
 func openAniListAuthorization() tea.Cmd {
@@ -2707,9 +2697,36 @@ func (m Model) checkForUpdates() tea.Cmd {
 
 func (m Model) installUpdate() tea.Cmd {
 	release := m.availableUpdate
+	events := m.updateEvents
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		return updateInstalledMsg{err: m.updateService.Install(ctx, release)}
+		err := m.updateService.InstallWithProgress(ctx, release, func(progress appupdate.ProbeProgress) {
+			events <- updateEventMsg{progress: progress}
+		})
+		events <- updateEventMsg{err: err, done: true}
+		return nil
+	}
+}
+
+func (m Model) waitUpdateEvent() tea.Cmd {
+	events := m.updateEvents
+	return func() tea.Msg { return <-events }
+}
+
+func updateOverallProgress(progress appupdate.ProbeProgress) float64 {
+	switch progress.Phase {
+	case appupdate.ProbeDownloading:
+		return progress.Fraction() * 0.90
+	case appupdate.ProbeChecksums:
+		return 0.90
+	case appupdate.ProbeVerifying:
+		return 0.95
+	case appupdate.ProbeReplacing:
+		return 0.99
+	case appupdate.ProbeComplete:
+		return 1
+	default:
+		return 0
 	}
 }

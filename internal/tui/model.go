@@ -587,7 +587,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage, m.cursor = stagePages, 0
 		return m, nil
 	case playerFinishedMsg:
-		var syncCommand tea.Cmd
+		var syncCommand, notificationCommand tea.Cmd
 		if msg.err != nil {
 			m.err = fmt.Errorf("player: %w", msg.err)
 		}
@@ -628,11 +628,17 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			case progress.Reason == "quit" && percentage < watchedThreshold*100:
 				m.status = fmt.Sprintf("Playback stopped at %.0f%%", percentage)
 			default:
-				m.status = "Playback finished"
+				m.status = ""
+				notificationCommand = m.notifier.Notify(notification.Notice{
+					Title: "Playback finished", Message: continueEpisodeLabel(entry.EpisodeNumber, entry.EpisodeName), Level: notification.Info,
+				})
 			}
 			syncCommand = m.syncAniListPlayback(entry, progress)
 		} else if msg.err == nil {
-			m.status = "Playback finished"
+			m.status = ""
+			notificationCommand = m.notifier.Notify(notification.Notice{
+				Title: "Playback finished", Message: "Returned to AnimiX", Level: notification.Info,
+			})
 		} else if msg.entry != nil && isLocalProxyURL(msg.entry.VideoURL) {
 			entry := *msg.entry
 			m.pendingPlayback = &entry
@@ -645,7 +651,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.playbackReturnHome = false
 		}
-		return m, syncCommand
+		return m, tea.Batch(syncCommand, notificationCommand)
 	case repositoriesMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -781,7 +787,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshNewEpisodes(time.Now())
 		m.refreshContinueWatching()
-		m.status = fmt.Sprintf("Playback finished • AniList progress %d", msg.entry.Progress)
+		m.status = ""
 		return m, nil
 	case aniListLogoutMsg:
 		m.loading, m.err = false, msg.err

@@ -65,6 +65,7 @@ type ContinueEntry struct {
 	WatchedEpisodes    []string          `json:"watchedEpisodes,omitempty" toml:"watched_episodes,omitempty"`
 	AniListEntryID     int               `json:"aniListEntryId,omitempty" toml:"anilist_entry_id,omitempty"`
 	AniListMediaID     int               `json:"aniListMediaId,omitempty" toml:"anilist_media_id,omitempty"`
+	MALID              int               `json:"malId,omitempty" toml:"mal_id,omitempty"`
 	AniListProgress    int               `json:"aniListProgress,omitempty" toml:"anilist_progress,omitempty"`
 	AniListTotal       int               `json:"aniListTotal,omitempty" toml:"anilist_total,omitempty"`
 	AniListStatus      string            `json:"aniListStatus,omitempty" toml:"anilist_status,omitempty"`
@@ -194,7 +195,8 @@ func (s *Store) ClearStreamPreference(mediaID int) error {
 }
 
 type Store struct {
-	path string
+	path      string
+	statePath string
 }
 
 func DefaultPath() (string, error) {
@@ -205,29 +207,58 @@ func DefaultPath() (string, error) {
 	return filepath.Join(directory, "anymex-cli", "config.toml"), nil
 }
 
-func NewStore(path string) *Store { return &Store{path: path} }
+func NewStore(path string) *Store {
+	return &Store{path: path, statePath: filepath.Join(filepath.Dir(path), "state.json")}
+}
+
+type settings struct {
+	CheckUpdates *bool `toml:"check_updates,omitempty"`
+}
+
+type state struct {
+	Repositories      []Repository       `json:"repositories"`
+	AniListToken      string             `json:"anilistToken,omitempty"`
+	ContinueWatching  []ContinueEntry    `json:"continueWatching,omitempty"`
+	ActiveSources     map[string]string  `json:"activeSources,omitempty"`
+	MediaMappings     []MediaMapping     `json:"mediaMappings,omitempty"`
+	SourceCredentials []SourceCredential `json:"sourceCredentials,omitempty"`
+	StreamPreferences []StreamPreference `json:"streamPreferences,omitempty"`
+}
 
 func (s *Store) Load() (Config, error) {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s.migrateLegacyJSON()
-	}
-	if err != nil {
+	if err := s.migrateLegacyData(); err != nil {
 		return Config{}, err
 	}
-	var config Config
-	if _, err := toml.Decode(string(data), &config); err == nil {
-		return config, nil
+	var result Config
+	if data, err := os.ReadFile(s.path); err == nil {
+		var values settings
+		if _, err := toml.Decode(string(data), &values); err != nil {
+			return Config{}, fmt.Errorf("decode settings %s: %w", s.path, err)
+		}
+		result.CheckUpdates = values.CheckUpdates
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Config{}, err
 	}
-	// Custom --config paths may still point at a legacy JSON file. Read them so
-	// users can open AnimiX and save the next change as TOML.
-	if err := json.Unmarshal(data, &config); err != nil {
-		return Config{}, fmt.Errorf("decode config %s: %w", s.path, err)
+	if data, err := os.ReadFile(s.statePath); err == nil {
+		var values state
+		if err := json.Unmarshal(data, &values); err != nil {
+			return Config{}, fmt.Errorf("decode state %s: %w", s.statePath, err)
+		}
+		applyState(&result, values)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Config{}, err
 	}
-	return config, nil
+	return result, nil
 }
 
 func (s *Store) Save(config Config) error {
+	if err := s.writeState(config); err != nil {
+		return err
+	}
+	return s.writeSettings(config)
+}
+
+func (s *Store) writeSettings(config Config) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
@@ -236,7 +267,7 @@ func (s *Store) Save(config Config) error {
 	if err != nil {
 		return err
 	}
-	encodeErr := toml.NewEncoder(file).Encode(config)
+	encodeErr := toml.NewEncoder(file).Encode(settings{CheckUpdates: config.CheckUpdates})
 	closeErr := file.Close()
 	if encodeErr != nil {
 		return encodeErr
@@ -250,6 +281,24 @@ func (s *Store) Save(config Config) error {
 	return os.Rename(temporary, s.path)
 }
 
+func (s *Store) writeState(config Config) error {
+	if err := os.MkdirAll(filepath.Dir(s.statePath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(stateFromConfig(config), "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary := s.statePath + ".tmp"
+	if err := os.WriteFile(temporary, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(temporary, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, s.statePath)
+}
+
 func (s *Store) Ensure() error {
 	config, err := s.Load()
 	if err != nil {
@@ -258,34 +307,76 @@ func (s *Store) Ensure() error {
 	if _, err := os.Stat(s.path); errors.Is(err, os.ErrNotExist) {
 		enabled := true
 		config.CheckUpdates = &enabled
-		return s.Save(config)
+		return s.writeSettings(config)
 	}
 	return err
 }
 
-func (s *Store) migrateLegacyJSON() (Config, error) {
-	if !strings.EqualFold(filepath.Ext(s.path), ".toml") {
-		return Config{}, nil
+func (s *Store) migrateLegacyData() error {
+	if data, err := os.ReadFile(s.path); err == nil {
+		var legacy Config
+		if _, decodeErr := toml.Decode(string(data), &legacy); decodeErr != nil {
+			return fmt.Errorf("decode config %s: %w", s.path, decodeErr)
+		}
+		if hasManagedState(legacy) {
+			if err := s.writeState(legacy); err != nil {
+				return fmt.Errorf("migrate application state: %w", err)
+			}
+			if err := os.WriteFile(s.path+".bak", data, 0o600); err != nil {
+				return fmt.Errorf("back up combined TOML config: %w", err)
+			}
+			if err := s.writeSettings(legacy); err != nil {
+				return fmt.Errorf("rewrite settings-only TOML: %w", err)
+			}
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	legacy := strings.TrimSuffix(s.path, filepath.Ext(s.path)) + ".json"
 	data, err := os.ReadFile(legacy)
 	if errors.Is(err, os.ErrNotExist) {
-		return Config{}, nil
+		return nil
 	}
 	if err != nil {
-		return Config{}, err
+		return err
 	}
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
-		return Config{}, fmt.Errorf("decode legacy config %s: %w", legacy, err)
+		return fmt.Errorf("decode legacy config %s: %w", legacy, err)
 	}
-	if err := s.Save(config); err != nil {
-		return Config{}, fmt.Errorf("write migrated TOML config: %w", err)
+	if err := s.writeState(config); err != nil {
+		return fmt.Errorf("write migrated application state: %w", err)
+	}
+	if err := s.writeSettings(config); err != nil {
+		return fmt.Errorf("write migrated TOML settings: %w", err)
 	}
 	if err := os.Rename(legacy, legacy+".bak"); err != nil {
-		return Config{}, fmt.Errorf("back up legacy config: %w", err)
+		return fmt.Errorf("back up legacy config: %w", err)
 	}
-	return config, nil
+	return nil
+}
+
+func hasManagedState(config Config) bool {
+	return len(config.Repositories) > 0 || config.AniListToken != "" || len(config.ContinueWatching) > 0 ||
+		len(config.ActiveSources) > 0 || len(config.MediaMappings) > 0 ||
+		len(config.SourceCredentials) > 0 || len(config.StreamPreferences) > 0
+}
+
+func stateFromConfig(config Config) state {
+	return state{
+		Repositories: config.Repositories, AniListToken: config.AniListToken,
+		ContinueWatching: config.ContinueWatching, ActiveSources: config.ActiveSources,
+		MediaMappings: config.MediaMappings, SourceCredentials: config.SourceCredentials,
+		StreamPreferences: config.StreamPreferences,
+	}
+}
+
+func applyState(config *Config, values state) {
+	config.Repositories, config.AniListToken = values.Repositories, values.AniListToken
+	config.ContinueWatching, config.ActiveSources = values.ContinueWatching, values.ActiveSources
+	config.MediaMappings, config.SourceCredentials = values.MediaMappings, values.SourceCredentials
+	config.StreamPreferences = values.StreamPreferences
 }
 
 func (s *Store) Add(repository Repository) error {

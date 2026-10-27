@@ -7,14 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/itsmenewbie03/animix/internal/bridge"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
 	anyruntime "github.com/itsmenewbie03/animix/internal/runtime"
 	"github.com/itsmenewbie03/animix/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
@@ -33,14 +34,43 @@ func main() {
 	extensionsPath := flag.String("extensions", defaultExtensions, "directory containing converted extension JARs")
 	playerPath := flag.String("player", "mpv", "external video player executable")
 	configPath := flag.String("config", defaultConfig, "path to CLI configuration")
-	installRuntime := flag.Bool("install-runtime", false, "download and verify the pinned runtime bridge")
+	var installRuntime installRuntimeFlag
+	flag.Var(&installRuntime, "install-runtime", "install a runtime: bare for latest upstream, fork@latest, upstream@v2.7.3")
 	diagnose := flag.Bool("diagnose", false, "verify the runtime and list installed sources without opening the TUI")
+	os.Args = append([]string{os.Args[0]}, normalizeInstallArgs(os.Args[1:])...)
 	flag.Parse()
 
-	if *installRuntime {
-		fmt.Fprintf(os.Stderr, "Installing AnymeX runtime %s…\n", anyruntime.Version)
-		if err := anyruntime.Install(*runtimePath); err != nil {
+	runtimeFlagSet := false
+	flag.Visit(func(current *flag.Flag) {
+		if current.Name == "runtime" {
+			runtimeFlagSet = true
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if installRuntime.enabled {
+		release, err := anyruntime.Resolve(ctx, installRuntime.spec)
+		if err != nil {
 			fatal(err)
+		}
+		destination := *runtimePath
+		if !runtimeFlagSet {
+			destination, err = anyruntime.Path(release.Source, release.Version)
+			if err != nil {
+				fatal(err)
+			}
+			*runtimePath = destination
+		}
+		fmt.Fprintf(os.Stderr, "Installing %s runtime %s…\n", release.Source, release.Version)
+		if err := anyruntime.Install(ctx, release, destination); err != nil {
+			fatal(err)
+		}
+		if !runtimeFlagSet {
+			if err := anyruntime.SetCurrent(release.Source, release.Version); err != nil {
+				fatal(fmt.Errorf("record default runtime: %w", err))
+			}
 		}
 	}
 	if _, err := os.Stat(*runtimePath); err != nil {
@@ -53,8 +83,6 @@ func main() {
 		fatal(fmt.Errorf("create extensions directory: %w", err))
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	client, err := bridge.Start(ctx, *javaPath, *runtimePath)
 	if err != nil {
 		fatal(err)
@@ -83,6 +111,49 @@ func main() {
 	if _, err := program.Run(); err != nil {
 		fatal(err)
 	}
+}
+
+type installRuntimeFlag struct {
+	enabled bool
+	spec    string
+}
+
+func (install *installRuntimeFlag) String() string {
+	return install.spec
+}
+
+func (install *installRuntimeFlag) IsBoolFlag() bool {
+	return true
+}
+
+func (install *installRuntimeFlag) Set(value string) error {
+	switch value {
+	case "", "true":
+		install.enabled = true
+		install.spec = ""
+	case "false":
+		install.enabled = false
+		install.spec = ""
+	default:
+		install.enabled = true
+		install.spec = value
+	}
+	return nil
+}
+
+func normalizeInstallArgs(args []string) []string {
+	normalized := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if (argument == "--install-runtime" || argument == "-install-runtime") &&
+			index+1 < len(args) && !strings.HasPrefix(args[index+1], "-") {
+			normalized = append(normalized, argument+"="+args[index+1])
+			index++
+			continue
+		}
+		normalized = append(normalized, argument)
+	}
+	return normalized
 }
 
 func defaultExtensionDirectory() string {

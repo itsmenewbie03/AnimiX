@@ -10,22 +10,91 @@ You'll need these installed before your first run:
 
 - [Java 21](https://adoptium.net/) or a compatible runtime
 - [`mpv`](https://mpv.io/installation/) for video playback
-- [Go 1.24+](https://go.dev/dl/) when running or building from source
 - AnymeX-compatible extension JARs — install them from inside AnimiX, or point
   it at an existing Aniyomi extension folder
+
+[Go 1.24+](https://go.dev/dl/) is only needed when running or building from
+source; the install script below fetches a prebuilt binary.
 
 AnimiX drives the [AnymeX](https://github.com/RyanYuuki/AnymeX) desktop runtime,
 so the same extension ecosystem applies.
 
+> **Cloudflare-protected sources:** stock upstream runtime releases do not emit
+> Cloudflare challenge events yet. Use **our fork** —
+> [itsmenewbie03/AnymeXExtensionRuntimeBridge](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge)
+> — with `--install-runtime fork@latest` when you need recovery.
+> See **Cloudflare Recovery** below.
+
+## 📦 Install
+
+Prebuilt binaries are published to GitHub Releases. The installer needs `curl`
+and either `sha256sum` or `shasum`; no Go toolchain is required:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/itsmenewbie03/AnimiX/main/install.sh | bash
+```
+
+It installs `animix` to `~/.local/bin`. Pin a release or choose another
+destination:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/itsmenewbie03/AnimiX/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/itsmenewbie03/AnimiX/main/install.sh | bash -s -- --dir ~/bin
+```
+
+The same settings are available as `ANIMIX_VERSION`, `ANIMIX_INSTALL_DIR`, and
+`ANIMIX_REPO` environment variables.
+
+The binary still needs a runtime JAR. Install one after the script finishes:
+
+```sh
+animix --install-runtime            # latest upstream
+animix --install-runtime fork@latest # our Cloudflare-aware fork
+```
+
 ## 🛠️ Setup
 
-From the project root, install the pinned runtime first:
+From a source checkout, install a runtime with Go (a prebuilt binary uses the
+same flags without `go run`):
 
 ```sh
 go run . --install-runtime
 ```
 
-The runtime download is SHA-256 verified. After that, launch AnimiX with:
+A bare install resolves the **latest upstream release**. That is the stock
+runtime, so it does **not** include Cloudflare events. Choose a source and
+version explicitly:
+
+```sh
+# Latest release from OUR fork (Cloudflare-aware)
+go run . --install-runtime fork@latest
+
+# A specific release from our fork
+go run . --install-runtime fork@v2.7.3-animix.1
+
+# Latest upstream release
+go run . --install-runtime upstream@latest
+
+# A specific upstream release
+go run . --install-runtime upstream@v2.7.3
+```
+
+Here **fork** means our fork at
+[itsmenewbie03/AnymeXExtensionRuntimeBridge](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge).
+`--install-runtime=fork@latest` works too; a source without `@version` means
+`@latest`. Every download is SHA-256 verified against the GitHub release digest.
+
+Installs are isolated by source and version:
+
+```text
+~/.config/anymex-cli/runtime/<source>/<version>/anymex_desktop_runtime.jar
+```
+
+The most recent install becomes the default for plain `go run .`; pass
+`--runtime` to override it. The selection is recorded in
+`~/.config/anymex-cli/runtime/current`.
+
+After installing, launch AnimiX with:
 
 ```sh
 go run .
@@ -38,7 +107,7 @@ go run . --extensions /path/to/AnymeX/Extensions/Aniyomi
 ```
 
 Testing unreleased runtime bridge changes? Pass your rebuilt JAR explicitly —
-`--install-runtime` installs the pinned release and won't test your local build:
+`--install-runtime` installs a published release and won't test your local build:
 
 ```sh
 go run . --runtime ../AnymeXExtensionRuntimeBridge/RuntimeBridges/Desktop/build/libs/desktop_bridge.jar
@@ -58,6 +127,10 @@ The build produces a single `animix` binary:
 ```sh
 go build -o animix .
 ```
+
+CI runs tests, `go vet`, and a build on every push and pull request. Pushing a
+`v*` tag triggers the release workflow, which publishes binaries named
+`animix_<os>_<arch>[.exe]` plus `SHA256SUMS` for the install script.
 
 ## 🚀 Running
 
@@ -129,6 +202,61 @@ Press `c` on a source-backed screen to start recovery manually when an
 extension hides the underlying HTTP error. Credentials are stored per source in
 a user-only (`0600`) configuration file. A 10-second request timeout remains as
 a fallback for old runtimes and unrecognized challenges.
+
+### ⚠️ Use a runtime that emits Cloudflare events
+
+This recovery flow depends on unsolicited `cloudflare` events from the runtime.
+**Stock upstream releases do not emit them yet.** Our fork's `main` branch does.
+
+A bare `--install-runtime` installs the latest upstream release, so it will not
+enable recovery. Install our fork explicitly:
+
+```sh
+go run . --install-runtime fork@latest
+```
+
+Here **fork** means our fork at
+[itsmenewbie03/AnymeXExtensionRuntimeBridge](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge).
+Selecting `upstream@latest` or another stock upstream tag is still available,
+but those builds leave you on the 10-second timeout fallback because they do not
+emit `cloudflare` events. If you use `--runtime` directly, point it at a build or
+release from our fork, not a stock upstream JAR.
+
+**Build the fork locally:**
+
+```sh
+git clone https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge.git
+cd AnymeXExtensionRuntimeBridge/RuntimeBridges/Desktop
+bash ./gradlew shadowJar
+```
+
+Then launch AnimiX with the built JAR:
+
+```sh
+go run . --runtime \
+  /path/to/AnymeXExtensionRuntimeBridge/RuntimeBridges/Desktop/build/libs/desktop_bridge.jar
+```
+
+**Fork releases** are built by the
+[Desktop runtime workflow](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge/actions/workflows/desktop-runtime.yml)
+on every `v*` tag and published to
+[Releases](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge/releases)
+as `anymex_desktop_runtime.jar` plus a `.sha256` checksum. To publish one:
+
+```sh
+git tag v2.7.3-animix.2
+git push origin v2.7.3-animix.2
+```
+
+The same workflow also supports manual dispatch, which uploads an unsigned
+workflow artifact instead of a release. Manual runs only appear in the Actions
+tab once the workflow file exists on the repository's default branch.
+
+To use a downloaded release directly:
+
+```sh
+go run . --runtime ~/Downloads/anymex_desktop_runtime.jar
+```
 
 ## 🧩 Extensions & Repositories
 

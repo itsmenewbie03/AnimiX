@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -16,7 +17,10 @@ import (
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
 	anyruntime "github.com/itsmenewbie03/animix/internal/runtime"
 	"github.com/itsmenewbie03/animix/internal/tui"
+	appupdate "github.com/itsmenewbie03/animix/internal/update"
 )
+
+var version = "dev"
 
 func main() {
 	defaultRuntime, err := anyruntime.DefaultPath()
@@ -37,6 +41,7 @@ func main() {
 	var installRuntime installRuntimeFlag
 	flag.Var(&installRuntime, "install-runtime", "install a runtime: bare for latest upstream, fork@latest, upstream@v2.7.3")
 	diagnose := flag.Bool("diagnose", false, "verify the runtime and list installed sources without opening the TUI")
+	editConfig := flag.Bool("e", false, "open the AnimiX configuration in $VISUAL or $EDITOR")
 	os.Args = append([]string{os.Args[0]}, normalizeInstallArgs(os.Args[1:])...)
 	flag.Parse()
 
@@ -49,6 +54,20 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	store := appconfig.NewStore(*configPath)
+	if *editConfig {
+		if err := store.Ensure(); err != nil {
+			fatal(fmt.Errorf("prepare config: %w", err))
+		}
+		if err := openConfigEditor(*configPath); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	config, err := store.Load()
+	if err != nil {
+		fatal(fmt.Errorf("load config: %w", err))
+	}
 
 	if installRuntime.enabled {
 		release, err := anyruntime.Resolve(ctx, installRuntime.spec)
@@ -104,13 +123,46 @@ func main() {
 		return
 	}
 
+	options := []tui.Option{}
+	if config.UpdatesEnabled() {
+		options = append(options, tui.WithUpdateCheck(appupdate.NewClient(), version))
+	}
 	program := tea.NewProgram(
-		tui.New(service, appconfig.NewStore(*configPath), *extensionsPath, *playerPath),
+		tui.New(service, store, *extensionsPath, *playerPath, options...),
 		tea.WithAltScreen(),
 	)
 	if _, err := program.Run(); err != nil {
 		fatal(err)
 	}
+}
+
+func openConfigEditor(path string) error {
+	editor := strings.TrimSpace(firstNonEmpty(os.Getenv("VISUAL"), os.Getenv("EDITOR")))
+	var name string
+	var args []string
+	if editor != "" {
+		fields := strings.Fields(editor)
+		name, args = fields[0], fields[1:]
+	} else if runtime.GOOS == "windows" {
+		name = "notepad"
+	} else {
+		name = "vi"
+	}
+	command := exec.Command(name, append(args, path)...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("edit config with %s: %w", name, err)
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type installRuntimeFlag struct {

@@ -21,6 +21,7 @@ import (
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
 	"github.com/itsmenewbie03/animix/internal/player"
 	"github.com/itsmenewbie03/animix/internal/repository"
+	appupdate "github.com/itsmenewbie03/animix/internal/update"
 )
 
 // New runtimes report challenges immediately. Keep a bounded fallback for old
@@ -50,6 +51,7 @@ const (
 	stageDiscoverSources
 	stageCloudflareCookie
 	stageCloudflareUserAgent
+	stageUpdatePrompt
 )
 
 type cloudflareOperation uint8
@@ -134,6 +136,24 @@ type Model struct {
 	playbackReturnHome   bool
 	pendingPlayback      *appconfig.ContinueEntry
 	malID                int
+	updateService        UpdateService
+	currentVersion       string
+	availableUpdate      appupdate.Release
+	updateReturn         stage
+}
+
+type UpdateService interface {
+	Check(context.Context, string) (appupdate.Release, error)
+	Install(context.Context, appupdate.Release) error
+}
+
+type Option func(*Model)
+
+func WithUpdateCheck(service UpdateService, currentVersion string) Option {
+	return func(model *Model) {
+		model.updateService = service
+		model.currentVersion = currentVersion
+	}
 }
 
 type newEpisodeListItem struct {
@@ -288,6 +308,11 @@ type (
 	aniListLogoutMsg     struct{ err error }
 	browserOpenedMsg     struct{ err error }
 	credentialsLoadedMsg struct{ err error }
+	updateCheckedMsg     struct {
+		release appupdate.Release
+		err     error
+	}
+	updateInstalledMsg   struct{ err error }
 	cloudflareAppliedMsg struct {
 		credential appconfig.SourceCredential
 		err        error
@@ -304,7 +329,7 @@ var (
 	errorStyle = lipgloss.NewStyle().Foreground(errorColor)
 )
 
-func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, playerExecutable string) Model {
+func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, playerExecutable string, options ...Option) Model {
 	input := textinput.New()
 	input.Placeholder = "Search anime or manga"
 	input.CharLimit = 200
@@ -369,7 +394,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	episodes.SetFilteringEnabled(false)
 	episodes.SetShowHelp(false)
 	episodes.DisableQuitKeybindings()
-	return Model{
+	model := Model{
 		service:              service,
 		configStore:          store,
 		repositoryClient:     repository.NewClient(),
@@ -395,10 +420,18 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		continueWatchingList: continueWatching,
 		episodeList:          episodes,
 	}
+	for _, option := range options {
+		option(&model)
+	}
+	return model
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.loadRepositories())
+	commands := []tea.Cmd{m.spinner.Tick, m.loadRepositories()}
+	if m.updateService != nil {
+		commands = append(commands, m.checkForUpdates())
+	}
+	return tea.Batch(commands...)
 }
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -757,6 +790,24 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Cloudflare credentials applied; retrying request"
 		m.stage = m.cloudflareReturn
 		return m, m.retryCloudflareOperation()
+	case updateCheckedMsg:
+		// Update checks are best-effort and should never block startup.
+		if msg.err == nil && msg.release.Version != "" {
+			m.availableUpdate = msg.release
+			m.updateReturn = m.stage
+			m.stage = stageUpdatePrompt
+			m.loading = false
+		}
+		return m, nil
+	case updateInstalledMsg:
+		m.loading, m.err = false, msg.err
+		if msg.err != nil {
+			return m, nil
+		}
+		m.status = "AnimiX updated to " + m.availableUpdate.Version + "; restart to use it"
+		m.stage = m.updateReturn
+		m.availableUpdate = appupdate.Release{}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -794,6 +845,18 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.loading {
+		return m, nil
+	}
+	if m.stage == stageUpdatePrompt {
+		switch strings.ToLower(key.String()) {
+		case "y", "enter":
+			m.loading, m.err = true, nil
+			return m, tea.Batch(m.spinner.Tick, m.installUpdate())
+		case "n", "esc":
+			m.stage = m.updateReturn
+			m.availableUpdate = appupdate.Release{}
+			return m, nil
+		}
 		return m, nil
 	}
 	if m.stage == stageCloudflareCookie {
@@ -2542,5 +2605,23 @@ func (m Model) loadPages() tea.Cmd {
 		defer cancel()
 		items, err := m.service.Pages(ctx, m.selectedSource, m.selectedEpisode)
 		return pagesMsg{items: items, err: err}
+	}
+}
+
+func (m Model) checkForUpdates() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		release, err := m.updateService.Check(ctx, m.currentVersion)
+		return updateCheckedMsg{release: release, err: err}
+	}
+}
+
+func (m Model) installUpdate() tea.Cmd {
+	release := m.availableUpdate
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		return updateInstalledMsg{err: m.updateService.Install(ctx, release)}
 	}
 }

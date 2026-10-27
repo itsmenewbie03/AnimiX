@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +18,62 @@ import (
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
 	"github.com/itsmenewbie03/animix/internal/player"
 	"github.com/itsmenewbie03/animix/internal/repository"
+	appupdate "github.com/itsmenewbie03/animix/internal/update"
 )
+
+type fakeUpdateService struct {
+	release   appupdate.Release
+	installed bool
+}
+
+func (service *fakeUpdateService) Check(context.Context, string) (appupdate.Release, error) {
+	return service.release, nil
+}
+
+func (service *fakeUpdateService) Install(context.Context, appupdate.Release) error {
+	service.installed = true
+	return nil
+}
+
+func TestUpdateCheckPromptsAndInstalls(t *testing.T) {
+	t.Parallel()
+	service := &fakeUpdateService{release: appupdate.Release{Version: "v0.2.0"}}
+	model := New(nil, nil, "", "mpv", WithUpdateCheck(service, "v0.1.0"))
+	model.loading = false
+
+	message := model.checkForUpdates()()
+	updated, _ := model.Update(message)
+	model = updated.(Model)
+	if model.stage != stageUpdatePrompt || !strings.Contains(model.View(), "v0.2.0") {
+		t.Fatalf("update prompt not shown: stage=%d\n%s", model.stage, model.View())
+	}
+
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if command == nil || !model.loading {
+		t.Fatal("update installer was not started")
+	}
+	message = model.installUpdate()()
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+	if !service.installed || model.err != nil || !strings.Contains(model.status, "restart") {
+		t.Fatalf("update result = installed:%t err:%v status:%q", service.installed, model.err, model.status)
+	}
+}
+
+func TestUpdatePromptCanBeSkipped(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.stage = stageUpdatePrompt
+	model.updateReturn = stageSources
+	model.availableUpdate = appupdate.Release{Version: "v0.2.0"}
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = updated.(Model)
+	if model.stage != stageSources || model.availableUpdate.Version != "" {
+		t.Fatalf("skipped update state = %#v", model)
+	}
+}
 
 func TestNewEpisodeEntriesMatchAnymeXHomeRules(t *testing.T) {
 	t.Parallel()

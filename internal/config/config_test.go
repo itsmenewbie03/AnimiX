@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -43,11 +44,55 @@ func TestLoadMigratesLegacyJSONAndKeepsBackup(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("TOML config missing: %v", err)
 	}
+	settingsData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(settingsData) != "" {
+		t.Fatalf("config.toml contains application state: %s", settingsData)
+	}
+	stateData, err := os.ReadFile(filepath.Join(directory, "state.json"))
+	if err != nil {
+		t.Fatalf("state.json missing: %v", err)
+	}
+	if !strings.Contains(string(stateData), `"anilistToken": "secret"`) {
+		t.Fatalf("state.json does not contain migrated state: %s", stateData)
+	}
 	if _, err := os.Stat(legacy + ".bak"); err != nil {
 		t.Fatalf("JSON backup missing: %v", err)
 	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Fatalf("legacy JSON still active: %v", err)
+	}
+}
+
+func TestLoadSplitsCombinedTOMLAndKeepsBackup(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.toml")
+	combined := "check_updates = false\nanilist_token = \"secret\"\n\n[[repositories]]\nurl = \"https://example.test\"\ntype = \"anime\"\n"
+	if err := os.WriteFile(path, []byte(combined), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewStore(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UpdatesEnabled() || loaded.AniListToken != "secret" || len(loaded.Repositories) != 1 {
+		t.Fatalf("split config = %#v", loaded)
+	}
+	settingsData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(settingsData), "anilist_token") || strings.Contains(string(settingsData), "repositories") {
+		t.Fatalf("config.toml still contains state: %s", settingsData)
+	}
+	if _, err := os.Stat(path + ".bak"); err != nil {
+		t.Fatalf("combined TOML backup missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "state.json")); err != nil {
+		t.Fatalf("state.json missing: %v", err)
 	}
 }
 
@@ -68,7 +113,7 @@ func TestEnsureCreatesEditableTOML(t *testing.T) {
 
 func TestStoreAddAndRemove(t *testing.T) {
 	t.Parallel()
-	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	repo := Repository{URL: "https://example.org/index.min.json", Type: "anime"}
 	if err := store.Add(repo); err != nil {
 		t.Fatal(err)
@@ -107,7 +152,7 @@ func TestStoreAddAndRemove(t *testing.T) {
 
 func TestSaveSourceCredentialReplacesSourceAndUsesPrivateFile(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.json")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	store := NewStore(path)
 	if err := store.SaveSourceCredential(SourceCredential{SourceID: "source-a", URL: "https://example.test", Cookie: "old", UserAgent: "ua"}); err != nil {
 		t.Fatal(err)
@@ -133,7 +178,7 @@ func TestSaveSourceCredentialReplacesSourceAndUsesPrivateFile(t *testing.T) {
 
 func TestSaveContinueKeepsNewestTenAndReplacesMedia(t *testing.T) {
 	t.Parallel()
-	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	for index := 0; index < 11; index++ {
 		entry := ContinueEntry{SourceID: "source", MediaURL: "media-" + strconv.Itoa(index), UpdatedAt: int64(index)}
 		if err := store.SaveContinue(entry); err != nil {
@@ -167,11 +212,11 @@ func TestSaveContinueKeepsNewestTenAndReplacesMedia(t *testing.T) {
 
 func TestSaveContinuePersistsAniListLink(t *testing.T) {
 	t.Parallel()
-	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	entry := ContinueEntry{
 		SourceID: "source", MediaURL: "media", EpisodeNumber: "4",
 		AniListEntryID: 10, AniListMediaID: 99, AniListProgress: 3,
-		AniListTotal: 12, AniListStatus: "CURRENT", AniListMediaStatus: "RELEASING",
+		MALID: 12345, AniListTotal: 12, AniListStatus: "CURRENT", AniListMediaStatus: "RELEASING",
 	}
 	if err := store.SaveContinue(entry); err != nil {
 		t.Fatal(err)
@@ -180,14 +225,14 @@ func TestSaveContinuePersistsAniListLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].AniListEntryID != 10 || loaded.ContinueWatching[0].AniListMediaID != 99 {
+	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].AniListEntryID != 10 || loaded.ContinueWatching[0].AniListMediaID != 99 || loaded.ContinueWatching[0].MALID != 12345 {
 		t.Fatalf("AniList playback link = %#v", loaded.ContinueWatching)
 	}
 }
 
 func TestSaveContinueMergesLocallyWatchedEpisodes(t *testing.T) {
 	t.Parallel()
-	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	for _, watched := range [][]string{{"1", "2"}, {"2", "3"}} {
 		if err := store.SaveContinue(ContinueEntry{SourceID: "source", MediaURL: "media", WatchedEpisodes: watched}); err != nil {
 			t.Fatal(err)
@@ -204,7 +249,7 @@ func TestSaveContinueMergesLocallyWatchedEpisodes(t *testing.T) {
 
 func TestSaveStreamPreferenceReplacesSameMedia(t *testing.T) {
 	t.Parallel()
-	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	if err := store.SaveStreamPreference(StreamPreference{MediaID: 42, Value: "720p"}); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +280,7 @@ func TestSaveStreamPreferenceReplacesSameMedia(t *testing.T) {
 
 func TestStorePersistsActiveSourceAndMediaMapping(t *testing.T) {
 	t.Parallel()
-	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	if err := store.SetActiveSource("anime", "source-a"); err != nil {
 		t.Fatal(err)
 	}

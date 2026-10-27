@@ -413,11 +413,13 @@ func TestResumePlaybackRefreshesExpiredLocalProxyURL(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
 	model.sources = []catalog.Source{{ID: "source", Name: "AnimePahe", Type: "anime"}}
+	model.trackingEntries = []anilist.Entry{{ID: 10, MediaID: 99, MALID: 12345, Title: "Overgeared"}}
 	entry := appconfig.ContinueEntry{
 		Title: "Overgeared", SourceID: "source", SourceName: "AnimePahe", MediaURL: "media",
 		EpisodeURL: "episode-5", EpisodeName: "Episode 5", EpisodeNumber: "5",
 		VideoURL: "http://localhost:44251/m3u8?url=expired", Quality: "1080p",
 		Position: 872.45, Duration: 1419.96,
+		AniListEntryID: 10, AniListMediaID: 99,
 	}
 
 	updated, command := model.resumePlayback(entry)
@@ -432,8 +434,27 @@ func TestResumePlaybackRefreshesExpiredLocalProxyURL(t *testing.T) {
 	if model.selectedEpisode.URL != entry.EpisodeURL {
 		t.Fatalf("selected episode = %#v", model.selectedEpisode)
 	}
+	if model.resolvingEpisode == nil || model.resolvingEpisode.MediaID != 99 || model.malID != 12345 {
+		t.Fatalf("AniSkip context = entry %#v, MAL ID %d", model.resolvingEpisode, model.malID)
+	}
+	if model.pendingPlayback.MALID != 12345 {
+		t.Fatalf("pending MAL ID = %d, want 12345", model.pendingPlayback.MALID)
+	}
 	if model.status != "" {
 		t.Fatalf("status = %q, want no layout-shifting status", model.status)
+	}
+}
+
+func TestAniListLibraryEnrichesSavedPlaybackForAniSkip(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.continueWatching = []appconfig.ContinueEntry{{AniListMediaID: 191656, EpisodeNumber: "4"}}
+	model.trackingEntries = []anilist.Entry{{MediaID: 191656, MALID: 12345}}
+
+	model.enrichPlaybackLinks()
+
+	if got := model.continueWatching[0].MALID; got != 12345 {
+		t.Fatalf("MAL ID = %d, want 12345", got)
 	}
 }
 

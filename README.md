@@ -120,10 +120,11 @@ opening the TUI?
 go run . --diagnose
 ```
 
-AnimiX stores configuration in `~/.config/anymex-cli/config.toml`. Existing
-`config.json` files are migrated automatically and retained as
-`config.json.bak`. Open the active configuration in `$VISUAL`, `$EDITOR`, or
-the platform fallback editor with:
+AnimiX stores user-editable settings in `~/.config/anymex-cli/config.toml` and
+keeps app-managed history, credentials, mappings, and source choices in
+`state.json`. Existing combined TOML or legacy `config.json` files are split
+automatically and retained as `.bak` files. Open only the settings file in
+`$VISUAL`, `$EDITOR`, or the platform fallback editor with:
 
 ```sh
 animix -e

@@ -698,6 +698,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.anilistToken = msg.token
 			m.viewer = msg.library.Viewer
 			m.trackingEntries = msg.library.Entries
+			m.enrichPlaybackLinks()
+			m.refreshResumeWatching()
 			m.refreshNewEpisodes(time.Now())
 			m.refreshContinueWatching()
 			if msg.open {
@@ -1452,6 +1454,7 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 	if m.resolvingEpisode != nil {
 		entry.AniListEntryID = m.resolvingEpisode.ID
 		entry.AniListMediaID = m.resolvingEpisode.MediaID
+		entry.MALID = m.resolvingEpisode.MALID
 		entry.AniListProgress = m.resolvingEpisode.Progress
 		entry.AniListTotal = m.resolvingEpisode.Total
 		entry.AniListStatus = m.resolvingEpisode.Status
@@ -1497,6 +1500,22 @@ func (m Model) resumePlayback(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd
 	m.selectedEpisode = catalog.Episode{
 		URL: entry.EpisodeURL, Name: entry.EpisodeName, EpisodeNumber: entry.EpisodeNumber,
 	}
+	// Resume Watching bypasses the normal details flow that populates AniSkip's
+	// MAL and episode context. Restore it from the saved link or the loaded
+	// AniList library before resolving the fresh stream.
+	m.malID = entry.MALID
+	for index := range m.trackingEntries {
+		tracked := &m.trackingEntries[index]
+		if (entry.AniListEntryID != 0 && tracked.ID == entry.AniListEntryID) ||
+			(entry.AniListMediaID != 0 && tracked.MediaID == entry.AniListMediaID) {
+			m.resolvingEpisode = tracked
+			if m.malID == 0 {
+				m.malID = tracked.MALID
+				entry.MALID = tracked.MALID
+			}
+			break
+		}
+	}
 	m.pendingPlayback = &entry
 	m.loading, m.err = true, nil
 	// Keep Home's height stable while the selected Resume Watching row carries
@@ -1512,6 +1531,22 @@ func (m Model) sourceByID(id string) (catalog.Source, bool) {
 		}
 	}
 	return catalog.Source{}, false
+}
+
+func (m *Model) enrichPlaybackLinks() {
+	for index := range m.continueWatching {
+		playback := &m.continueWatching[index]
+		if playback.MALID != 0 {
+			continue
+		}
+		for _, tracked := range m.trackingEntries {
+			if (playback.AniListEntryID != 0 && tracked.ID == playback.AniListEntryID) ||
+				(playback.AniListMediaID != 0 && tracked.MediaID == playback.AniListMediaID) {
+				playback.MALID = tracked.MALID
+				break
+			}
+		}
+	}
 }
 
 func matchingVideoIndex(videos []catalog.Video, quality string) int {

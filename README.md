@@ -131,9 +131,10 @@ animix -e
 ```
 
 Release builds check GitHub for updates in the background. A small notification
-and footer shortcut appear when a newer release is available; press `u` to open
-the update screen and run the checksum-verifying installer. Disable the check
-in TOML when desired:
+and footer shortcut appear when a newer release is available; press `u` to
+start downloading immediately. The update screen reports measured download
+progress, verifies the published checksum, and atomically replaces the binary.
+Disable the check in TOML when desired:
 
 ```toml
 check_updates = false

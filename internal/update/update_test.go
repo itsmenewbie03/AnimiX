@@ -2,10 +2,48 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 )
+
+func TestProbeReportsMeasuredDownloadAndVerifiesChecksum(t *testing.T) {
+	t.Parallel()
+	asset := []byte("verified animix release")
+	digest := fmt.Sprintf("%x", sha256.Sum256(asset))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v-test/SHA256SUMS" {
+			_, _ = fmt.Fprintf(writer, "%s  %s\n", digest, probeAssetName(runtime.GOOS, runtime.GOARCH))
+			return
+		}
+		writer.Header().Set("Content-Length", fmt.Sprint(len(asset)))
+		_, _ = writer.Write(asset)
+	}))
+	defer server.Close()
+	client := NewClient()
+	client.assetURL = server.URL + "/%s/%s"
+	var reports []ProbeProgress
+	if err := client.Probe(context.Background(), Release{Version: "v-test"}, func(progress ProbeProgress) {
+		reports = append(reports, progress)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) < 4 || reports[len(reports)-1].Phase != ProbeComplete {
+		t.Fatalf("progress reports = %#v", reports)
+	}
+	foundMeasuredDownload := false
+	for _, report := range reports {
+		if report.Phase == ProbeDownloading && report.Downloaded == int64(len(asset)) && report.Total == int64(len(asset)) {
+			foundMeasuredDownload = true
+		}
+	}
+	if !foundMeasuredDownload {
+		t.Fatalf("missing measured download in %#v", reports)
+	}
+}
 
 func TestCheckReturnsNewerRelease(t *testing.T) {
 	t.Parallel()

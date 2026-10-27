@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -93,6 +94,7 @@ type Model struct {
 	err                  error
 	status               string
 	spinner              spinner.Model
+	updateProgress       progress.Model
 	search               textinput.Model
 	repositoryInput      textinput.Model
 	extensionSearch      textinput.Model
@@ -365,6 +367,10 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	spin := spinner.New()
 	spin.Spinner = spinner.MiniDot
 	spin.Style = lipgloss.NewStyle().Foreground(accent)
+	updateProgress := progress.New(
+		progress.WithDefaultGradient(),
+		progress.WithWidth(48),
+	)
 	newEpisodes := list.New(nil, newEpisodeDelegate(true, false, ""), 60, 8)
 	newEpisodes.Title = "New Episodes"
 	newEpisodes.SetShowTitle(false)
@@ -408,6 +414,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		homeFocus:            homeFocusNone,
 		loading:              true,
 		spinner:              spin,
+		updateProgress:       updateProgress,
 		search:               input,
 		repositoryInput:      repoInput,
 		extensionSearch:      extSearch,
@@ -445,6 +452,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.alternativeTitle.Width = max(20, min(80, msg.Width-8))
 		m.cookieInput.Width = max(20, min(80, msg.Width-8))
 		m.userAgentInput.Width = max(20, min(80, msg.Width-8))
+		m.updateProgress.Width = max(20, min(60, msg.Width-12))
 		m.resizeNewEpisodesList()
 		m.resizeResumeWatchingList()
 		m.resizeContinueWatchingList()
@@ -453,6 +461,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	case progress.FrameMsg:
+		progressModel, cmd := m.updateProgress.Update(msg)
+		m.updateProgress = progressModel.(progress.Model)
 		return m, cmd
 	case sourcesMsg:
 		m.loading, m.err = false, msg.err
@@ -796,9 +808,6 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		// Update checks are best-effort and should never block startup.
 		if msg.err == nil && msg.release.Version != "" {
 			m.availableUpdate = msg.release
-			m.updateReturn = m.stage
-			m.stage = stageUpdatePrompt
-			m.loading = false
 		}
 		return m, nil
 	case updateInstalledMsg:
@@ -809,7 +818,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "AnimiX updated to " + m.availableUpdate.Version + "; restart to use it"
 		m.stage = m.updateReturn
 		m.availableUpdate = appupdate.Release{}
-		return m, nil
+		return m, m.updateProgress.SetPercent(1)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -851,15 +860,20 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.stage == stageUpdatePrompt {
 		switch strings.ToLower(key.String()) {
-		case "y", "enter":
+		case "enter", "i":
 			m.loading, m.err = true, nil
-			return m, tea.Batch(m.spinner.Tick, m.installUpdate())
-		case "n", "esc":
+			return m, tea.Batch(m.updateProgress.SetPercent(0.15), m.installUpdate())
+		case "esc":
 			m.stage = m.updateReturn
-			m.availableUpdate = appupdate.Release{}
 			return m, nil
 		}
 		return m, nil
+	}
+	if strings.ToLower(key.String()) == "u" && m.availableUpdate.Version != "" && !m.acceptsTextInput() {
+		m.updateReturn = m.stage
+		m.stage = stageUpdatePrompt
+		m.err = nil
+		return m, m.updateProgress.SetPercent(0)
 	}
 	if m.stage == stageCloudflareCookie {
 		switch key.String() {
@@ -1296,6 +1310,16 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) acceptsTextInput() bool {
+	switch m.stage {
+	case stageSearch, stageRepositoryAdd, stageExtensionSearch, stageAniListToken,
+		stageAlternativeTitle, stageCloudflareCookie, stageCloudflareUserAgent:
+		return true
+	default:
+		return false
+	}
 }
 
 func openAniListAuthorization() tea.Cmd {

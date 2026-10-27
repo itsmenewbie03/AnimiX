@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +49,27 @@ func TestNormalizeInstallArgs(t *testing.T) {
 				t.Fatalf("normalizeInstallArgs(%q) = %q, want %q", test.input, got, test.want)
 			}
 		})
+	}
+}
+
+func TestInstallerAtomicallyReplacesRunningBinary(t *testing.T) {
+	t.Parallel()
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, required := range []string{
+		`STAGED="$INSTALL_DIR/.animix-update-$$$EXT"`,
+		`cp "$TMP/$ASSET" "$STAGED"`,
+		`mv -f "$STAGED" "$TARGET"`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("installer missing atomic replacement step %q", required)
+		}
+	}
+	if strings.Contains(content, `cp "$TMP/$ASSET" "$TARGET"`) {
+		t.Fatal("installer writes directly to the running executable")
 	}
 }
 

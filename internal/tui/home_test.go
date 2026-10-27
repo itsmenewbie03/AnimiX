@@ -35,7 +35,7 @@ func (service *fakeUpdateService) Install(context.Context, appupdate.Release) er
 	return nil
 }
 
-func TestUpdateCheckPromptsAndInstalls(t *testing.T) {
+func TestUpdateCheckNotifiesWithoutInterruptingAndInstalls(t *testing.T) {
 	t.Parallel()
 	service := &fakeUpdateService{release: appupdate.Release{Version: "v0.2.0"}}
 	model := New(nil, nil, "", "mpv", WithUpdateCheck(service, "v0.1.0"))
@@ -44,11 +44,16 @@ func TestUpdateCheckPromptsAndInstalls(t *testing.T) {
 	message := model.checkForUpdates()()
 	updated, _ := model.Update(message)
 	model = updated.(Model)
-	if model.stage != stageUpdatePrompt || !strings.Contains(model.View(), "v0.2.0") {
-		t.Fatalf("update prompt not shown: stage=%d\n%s", model.stage, model.View())
+	if model.stage != stageSources || !strings.Contains(model.View(), "Update available") || !strings.Contains(model.View(), "u install AnimiX v0.2.0") {
+		t.Fatalf("non-intrusive update notification not shown: stage=%d\n%s", model.stage, model.View())
 	}
 
-	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	model = updated.(Model)
+	if command == nil || model.stage != stageUpdatePrompt || model.loading {
+		t.Fatalf("update screen not opened: stage=%d loading=%t", model.stage, model.loading)
+	}
+	updated, command = model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
 	if command == nil || !model.loading {
 		t.Fatal("update installer was not started")
@@ -61,17 +66,31 @@ func TestUpdateCheckPromptsAndInstalls(t *testing.T) {
 	}
 }
 
-func TestUpdatePromptCanBeSkipped(t *testing.T) {
+func TestUpdateScreenCanReturnWithoutDismissingNotification(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
 	model.loading = false
 	model.stage = stageUpdatePrompt
 	model.updateReturn = stageSources
 	model.availableUpdate = appupdate.Release{Version: "v0.2.0"}
-	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 	model = updated.(Model)
-	if model.stage != stageSources || model.availableUpdate.Version != "" {
-		t.Fatalf("skipped update state = %#v", model)
+	if model.stage != stageSources || model.availableUpdate.Version != "v0.2.0" {
+		t.Fatalf("returned update state = %#v", model)
+	}
+}
+
+func TestUpdateBindingDoesNotStealTextInput(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.stage = stageSearch
+	model.availableUpdate = appupdate.Release{Version: "v0.2.0"}
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	model = updated.(Model)
+	if model.stage != stageSearch {
+		t.Fatalf("update binding interrupted text input: stage=%d", model.stage)
 	}
 }
 

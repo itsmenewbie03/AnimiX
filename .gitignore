@@ -1,0 +1,55 @@
+# Binaries
+/animix
+/animix.exe
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.so
+
+# Go build, test, and profiling output
+*.test
+*.prof
+*.pprof
+*.coverprofile
+/coverage.out
+/coverage.html
+/cpu.out
+/mem.out
+/trace.out
+go.work
+go.work.sum
+
+# Runtime bridge and extension payloads
+*.jar
+*.apk
+
+# Local configuration and environment
+# The AniList token and Cloudflare cookies live in config.json.
+/config.json
+.env
+.env.*
+!.env.example
+.direnv/
+
+# Local build output
+/bin/
+/dist/
+
+# Editors and IDEs
+.idea/
+.vscode/
+.fleet/
+*.swp
+*.swo
+*~
+
+# Operating system cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+test.sh

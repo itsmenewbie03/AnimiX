@@ -301,6 +301,268 @@ func TestPlaybackReturnsToEpisodeSelector(t *testing.T) {
 	}
 }
 
+func TestEarlyPlaybackStopRequestsCloudflareCredentials(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	model.width, model.height = 100, 40
+	playback := appconfig.ContinueEntry{
+		SourceID: "source", MediaURL: "media", EpisodeNumber: "5", VideoURL: "https://example.test/video.m3u8",
+	}
+
+	updated, command := model.Update(playerFinishedMsg{
+		entry:    &playback,
+		progress: &player.Progress{Position: 61, Duration: 100, Reason: "eof"},
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("early end-of-file did not open Cloudflare recovery")
+	}
+	if model.stage != stageCloudflareCookie || model.cloudflareOperation != cloudflarePlayback {
+		t.Fatalf("recovery state = stage %d operation %d", model.stage, model.cloudflareOperation)
+	}
+	if model.pendingPlayback == nil || model.pendingPlayback.Position != 61 {
+		t.Fatalf("pending playback = %#v, want position 61", model.pendingPlayback)
+	}
+	if !strings.Contains(model.status, "Cloudflare credentials") {
+		t.Fatalf("status = %q, want Cloudflare recovery message", model.status)
+	}
+}
+
+func TestProxyFailureRequestsCloudflareCredentialsAtSavedPosition(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	playback := appconfig.ContinueEntry{
+		SourceID: "source", MediaURL: "media", EpisodeNumber: "5",
+		VideoURL: "http://localhost:44251/m3u8?url=upstream",
+	}
+
+	updated, command := model.Update(playerFinishedMsg{
+		err:      fmt.Errorf("exit status 2"),
+		entry:    &playback,
+		progress: &player.Progress{Position: 61, Duration: 100, Reason: "proxy-error", ProxyFailure: true},
+	})
+	model = updated.(Model)
+
+	if command == nil || model.stage != stageCloudflareCookie {
+		t.Fatalf("Cloudflare recovery not opened: stage=%d command=%v", model.stage, command)
+	}
+	if model.pendingPlayback == nil || model.pendingPlayback.Position != 61 {
+		t.Fatalf("pending playback = %#v", model.pendingPlayback)
+	}
+}
+
+func TestResumePlaybackRefreshesExpiredLocalProxyURL(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.sources = []catalog.Source{{ID: "source", Name: "AnimePahe", Type: "anime"}}
+	entry := appconfig.ContinueEntry{
+		Title: "Overgeared", SourceID: "source", SourceName: "AnimePahe", MediaURL: "media",
+		EpisodeURL: "episode-5", EpisodeName: "Episode 5", EpisodeNumber: "5",
+		VideoURL: "http://localhost:44251/m3u8?url=expired", Quality: "1080p",
+		Position: 872.45, Duration: 1419.96,
+	}
+
+	updated, command := model.resumePlayback(entry)
+	model = updated.(Model)
+
+	if command == nil {
+		t.Fatal("resume did not schedule fresh stream resolution")
+	}
+	if model.pendingPlayback == nil || model.pendingPlayback.Position != entry.Position {
+		t.Fatalf("pending playback = %#v", model.pendingPlayback)
+	}
+	if model.selectedEpisode.URL != entry.EpisodeURL {
+		t.Fatalf("selected episode = %#v", model.selectedEpisode)
+	}
+	if model.status != "" {
+		t.Fatalf("status = %q, want no layout-shifting status", model.status)
+	}
+}
+
+func TestResolvedResumeReplacesExpiredProxyURL(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	entry := appconfig.ContinueEntry{
+		VideoURL: "http://localhost:44251/m3u8?url=expired", Quality: "1080p",
+		Position: 872.45, Duration: 1419.96,
+	}
+	model.pendingPlayback = &entry
+
+	updated, command := model.Update(videosMsg{items: []catalog.Video{{
+		URL: "http://localhost:55321/m3u8?url=fresh", Quality: "1080p",
+	}}})
+	model = updated.(Model)
+
+	if command == nil {
+		t.Fatal("fresh stream was not launched")
+	}
+	if model.pendingPlayback != nil {
+		t.Fatalf("pending playback was not consumed: %#v", model.pendingPlayback)
+	}
+}
+
+func TestUserQuitDoesNotResume(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	playback := appconfig.ContinueEntry{
+		SourceID: "source", MediaURL: "media", EpisodeNumber: "5", VideoURL: "https://example.test/video.m3u8",
+	}
+	updated, command := model.Update(playerFinishedMsg{
+		entry:    &playback,
+		progress: &player.Progress{Position: 61, Duration: 100, Reason: "quit"},
+	})
+	model = updated.(Model)
+	if command != nil {
+		t.Fatal("user quit unexpectedly resumed playback")
+	}
+	if !strings.Contains(model.status, "Playback stopped at") {
+		t.Fatalf("status = %q, want stopped message", model.status)
+	}
+}
+
+func TestClosingResumedPlaybackReturnsHome(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	model.stage = stageStreams
+	model.playbackReturnHome = true
+	model.details.Episodes = []catalog.Episode{{URL: "episode-5", EpisodeNumber: "5"}}
+	playback := appconfig.ContinueEntry{
+		SourceID: "source", MediaURL: "media", EpisodeNumber: "5",
+		VideoURL: "http://localhost:50000/m3u8?url=fresh",
+	}
+
+	updated, _ := model.Update(playerFinishedMsg{
+		entry:    &playback,
+		progress: &player.Progress{Position: 61, Duration: 100, Reason: "quit"},
+	})
+	model = updated.(Model)
+
+	if model.stage != stageSources {
+		t.Fatalf("stage = %d, want home (%d)", model.stage, stageSources)
+	}
+	if model.homeFocus != homeFocusResumeWatching {
+		t.Fatalf("home focus = %d, want Resume Watching", model.homeFocus)
+	}
+	if model.playbackReturnHome {
+		t.Fatal("playback return-home flag was not cleared")
+	}
+}
+
+func TestClosingEpisodePlaybackReturnsEpisodeSelector(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	model.stage = stageStreams
+	model.details.Episodes = []catalog.Episode{{URL: "episode-5", EpisodeNumber: "5"}}
+	model.setEpisodeItems()
+	playback := appconfig.ContinueEntry{
+		SourceID: "source", MediaURL: "media", EpisodeNumber: "5",
+		VideoURL: "http://localhost:50000/m3u8?url=fresh",
+	}
+
+	updated, _ := model.Update(playerFinishedMsg{
+		entry:    &playback,
+		progress: &player.Progress{Position: 61, Duration: 100, Reason: "quit"},
+	})
+	model = updated.(Model)
+
+	if model.stage != stageEpisodes {
+		t.Fatalf("stage = %d, want episode selector (%d)", model.stage, stageEpisodes)
+	}
+}
+
+func TestIsEarlyPlaybackStop(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		progress player.Progress
+		want     bool
+	}{
+		{name: "early eof", progress: player.Progress{Position: 61, Duration: 100, Reason: "eof"}, want: true},
+		{name: "complete eof", progress: player.Progress{Position: 95, Duration: 100, Reason: "eof"}},
+		{name: "user quit", progress: player.Progress{Position: 61, Duration: 100, Reason: "quit"}},
+		{name: "short start", progress: player.Progress{Position: 2, Duration: 100, Reason: "eof"}},
+		{name: "unknown reason", progress: player.Progress{Position: 61, Duration: 100}},
+		{name: "no duration", progress: player.Progress{Position: 61, Reason: "eof"}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isEarlyPlaybackStop(test.progress); got != test.want {
+				t.Fatalf("isEarlyPlaybackStop(%#v) = %t, want %t", test.progress, got, test.want)
+			}
+		})
+	}
+}
+
+func TestPlaySelectedKeepsSavedEpisodePosition(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	model.width, model.height = 100, 40
+	model.selectedSource = catalog.Source{ID: "source", Name: "Source", Type: "anime"}
+	model.selectedMedia = catalog.Media{URL: "media", Title: "Media"}
+	model.selectedEpisode = catalog.Episode{URL: "episode-5", Name: "Episode 5"}
+	model.videos = []catalog.Video{{URL: "https://example.test/video.m3u8", Quality: "1080p"}}
+	model.continueWatching = []appconfig.ContinueEntry{{
+		SourceID: "source", MediaURL: "media", EpisodeURL: "episode-5", EpisodeNumber: "5",
+		Position: 872.45, Duration: 1419.96, VideoURL: "https://example.test/old.m3u8",
+	}}
+
+	updated, _ := model.playSelected()
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("playSelected: %v", model.err)
+	}
+	config, err := store.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.ContinueWatching) != 1 {
+		t.Fatalf("continue watching = %#v", config.ContinueWatching)
+	}
+	saved := config.ContinueWatching[0]
+	if saved.Position != 872.45 || saved.Duration != 1419.96 {
+		t.Fatalf("saved position = %v/%v, want 872.45/1419.96", saved.Position, saved.Duration)
+	}
+	if saved.VideoURL != "https://example.test/video.m3u8" {
+		t.Fatalf("saved video url = %q, want freshly resolved url", saved.VideoURL)
+	}
+}
+
+func TestPlaySelectedRestartsFinishedEpisode(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	model := New(nil, store, "", "mpv")
+	model.width, model.height = 100, 40
+	model.selectedSource = catalog.Source{ID: "source", Name: "Source", Type: "anime"}
+	model.selectedMedia = catalog.Media{URL: "media", Title: "Media"}
+	model.selectedEpisode = catalog.Episode{URL: "episode-5", Name: "Episode 5"}
+	model.videos = []catalog.Video{{URL: "https://example.test/video.m3u8", Quality: "1080p"}}
+	model.continueWatching = []appconfig.ContinueEntry{{
+		SourceID: "source", MediaURL: "media", EpisodeURL: "episode-5", EpisodeNumber: "5",
+		Position: 1419.96, Duration: 1419.96, VideoURL: "https://example.test/old.m3u8",
+	}}
+
+	updated, _ := model.playSelected()
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("playSelected: %v", model.err)
+	}
+	config, err := store.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if position := config.ContinueWatching[0].Position; position != 0 {
+		t.Fatalf("saved position = %v, want 0 for a finished episode", position)
+	}
+}
+
 func TestExistingCompletedPlaybackCountsAsLocallyWatched(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
@@ -589,6 +851,36 @@ func TestLoadingSpinnerDecoratesSelectedHomeItem(t *testing.T) {
 	}
 	if strings.Contains(view, "Working with the AnymeX") {
 		t.Fatalf("loading view added a top status row:\n%s", view)
+	}
+}
+
+func TestRefreshingResumeDecoratesSelectedRowWithoutShiftingHome(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 40
+	model.stage = stageSources
+	model.homeType = "anime"
+	model.homeFocus = homeFocusResumeWatching
+	model.resumeWatchingList.SetSize(92, 3)
+	entry := appconfig.ContinueEntry{Title: "Overgeared", EpisodeNumber: "5", Position: 879, Duration: 1420}
+	_ = model.resumeWatchingList.SetItems([]list.Item{resumeWatchingListItem{entry: entry}})
+
+	idleView := ansi.Strip(model.View())
+	model.loading = true
+	model.pendingPlayback = &entry
+	loadingView := ansi.Strip(model.View())
+
+	if !strings.Contains(loadingView, ansi.Strip(model.spinner.View())) || !strings.Contains(loadingView, "Overgeared") {
+		t.Fatalf("refreshing Resume Watching row has no spinner:\n%s", loadingView)
+	}
+	if titleColumn(idleView, "Overgeared") != titleColumn(loadingView, "Overgeared") {
+		t.Fatalf("Resume Watching title shifted while refreshing:\nidle:\n%s\nloading:\n%s", idleView, loadingView)
+	}
+	if len(strings.Split(idleView, "\n")) != len(strings.Split(loadingView, "\n")) {
+		t.Fatalf("Home row count changed while refreshing:\nidle:\n%s\nloading:\n%s", idleView, loadingView)
+	}
+	if strings.Contains(loadingView, "Refreshing stream") {
+		t.Fatalf("refresh status leaked above Home:\n%s", loadingView)
 	}
 }
 

@@ -188,6 +188,21 @@ subtitles, then returns you to the episode selector when playback ends.
 - Playback launched from an AniList-linked Home entry updates AniList after 90%
   of the episode has played. Progress never moves backward, finishing the final
   known episode marks the anime `COMPLETED`, and `REPEATING` is preserved.
+- Resuming from **Resume Watching** resolves the episode again before passing
+  the saved position to mpv. This replaces expired `localhost` proxy URLs left
+  by an earlier runtime process.
+- After repeated local-proxy HTTP 500 responses, mpv exits before ffmpeg can
+  skip the rest of the playlist. AnimiX saves the current position and opens
+  Cloudflare recovery. Applying new browser credentials resolves a fresh stream
+  URL and restarts mpv from that position. A clean EOF before 90% follows the
+  same recovery path instead of being marked finished.
+- HLS playback uses a fresh HTTP connection per segment; this avoids stale
+  keep-alive sockets from extension-local proxies that close idle connections
+  after five seconds. The demuxer buffer is capped at 32 MiB with two minutes of
+  readahead, matching AnymeX Android and preventing AnimePahe's CDN from being
+  flooded by hundreds of segment requests at startup.
+- To capture an mpv log for a stream that still ends early, set
+  `ANIMIX_MPV_LOG=/tmp/animix-mpv.log` before launching AnimiX.
 
 ## 🛡️ Cloudflare Recovery
 

@@ -15,8 +15,24 @@ import (
 )
 
 type Progress struct {
-	Position float64 `json:"position"`
-	Duration float64 `json:"duration"`
+	Position     float64 `json:"position"`
+	Duration     float64 `json:"duration"`
+	Reason       string  `json:"reason"`
+	ProxyFailure bool    `json:"proxyFailure,omitempty"`
+}
+
+// networkArguments avoid stale keep-alive sockets and reconnect transient
+// network failures. Some extension-local proxies (notably AnimePahe's
+// NanoHTTPD server) close idle HTTP connections after five seconds, while HLS
+// segments are often longer than that. Reusing a closed connection makes mpv
+// stop at a segment boundary with "End of file".
+var networkArguments = []string{
+	"--network-timeout=30",
+	"--cache=yes",
+	"--cache-secs=120",
+	"--demuxer-readahead-secs=120",
+	"--demuxer-max-bytes=32MiB",
+	"--demuxer-lavf-o=http_persistent=0,http_multiple=0,seg_max_retry=5,reconnect=1,reconnect_streamed=1,reconnect_delay_max=5",
 }
 
 type Session struct {
@@ -33,7 +49,11 @@ type Chapter struct {
 }
 
 func MPV(executable string, video catalog.Video) *exec.Cmd {
-	args := []string{"--force-window=yes", "--save-position-on-quit=yes"}
+	args := []string{"--force-window=yes", "--no-save-position-on-quit"}
+	args = append(args, networkArguments...)
+	if logPath := os.Getenv("ANIMIX_MPV_LOG"); logPath != "" {
+		args = append(args, "--log-file="+logPath)
+	}
 	if len(video.Headers) > 0 {
 		keys := make([]string, 0, len(video.Headers))
 		for key := range video.Headers {
@@ -55,7 +75,7 @@ func MPV(executable string, video catalog.Video) *exec.Cmd {
 	return exec.Command(executable, args...)
 }
 
-func MPVSession(executable string, video catalog.Video, chapters ...Chapter) (*Session, error) {
+func MPVSession(executable string, video catalog.Video, start float64, chapters ...Chapter) (*Session, error) {
 	directory, err := os.MkdirTemp("", "anymex-mpv-")
 	if err != nil {
 		return nil, fmt.Errorf("create mpv progress directory: %w", err)
@@ -64,6 +84,9 @@ func MPVSession(executable string, video catalog.Video, chapters ...Chapter) (*S
 	scriptPath := filepath.Join(directory, "capture-progress.lua")
 	script := `local output = ` + strconv.Quote(resultPath) + `
 local position, duration = 0, 0
+local reason = "unknown"
+local proxy_failure = false
+local proxy_errors = 0
 local function snapshot()
   local currentPosition = mp.get_property_number("time-pos")
   local currentDuration = mp.get_property_number("duration")
@@ -78,21 +101,39 @@ mp.observe_property("duration", "number", function(_, value)
 end)
 local function write_progress()
   snapshot()
-  if duration <= 0 then return end
   local file = io.open(output, "w")
   if file then
-    file:write(string.format('{"position":%.6f,"duration":%.6f}', position, duration))
+    file:write(string.format('{"position":%.6f,"duration":%.6f,"reason":"%s","proxyFailure":%s}', position, duration, reason, tostring(proxy_failure)))
     file:close()
   end
 end
-mp.register_event("end-file", write_progress)
+mp.enable_messages("warn")
+mp.register_event("log-message", function(event)
+  local text = event.text or ""
+  if text:find("HTTP error 500", 1, true) or text:find("Server returned 5XX", 1, true) then
+    proxy_errors = proxy_errors + 1
+    if proxy_errors >= 3 then
+      proxy_failure = true
+      reason = "proxy-error"
+      write_progress()
+      mp.commandv("quit", "2")
+    end
+  end
+end)
+mp.register_event("end-file", function(event)
+  if not proxy_failure then reason = event.reason or "unknown" end
+  write_progress()
+end)
 mp.register_event("shutdown", write_progress)
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		os.RemoveAll(directory)
 		return nil, fmt.Errorf("write mpv progress script: %w", err)
 	}
-	extra := []string{}
+	extra := []string{"--no-resume-playback"}
+	if start > 0 {
+		extra = append(extra, fmt.Sprintf("--start=%.3f", start))
+	}
 	if chapterPath, chapterErr := writeChapters(directory, chapters); chapterErr != nil {
 		os.RemoveAll(directory)
 		return nil, chapterErr

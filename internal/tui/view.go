@@ -241,10 +241,11 @@ func (m Model) sourcesView() string {
 
 	if m.homeType == "anime" {
 		loadingSelection := m.loading && m.resolvingEpisode != nil
+		resumeLoading := m.loading && m.pendingPlayback != nil
 		if len(m.resumeWatchingList.Items()) > 0 {
 			output.WriteString(homeSectionTitle("Resume Watching", m.homeFocus == homeFocusResumeWatching) + "\n")
 			resumeList := m.resumeWatchingList
-			resumeList.SetDelegate(newEpisodeDelegate(m.homeFocus == homeFocusResumeWatching, loadingSelection, ansi.Strip(m.spinner.View())))
+			resumeList.SetDelegate(newEpisodeDelegate(m.homeFocus == homeFocusResumeWatching, loadingSelection || resumeLoading, ansi.Strip(m.spinner.View())))
 			output.WriteString(resumeList.View())
 			output.WriteString("\n")
 		}

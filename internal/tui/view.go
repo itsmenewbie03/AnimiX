@@ -16,6 +16,10 @@ func (m Model) View() string {
 	body.WriteString("\n")
 	body.WriteString(helpStyle.Render(m.breadcrumb()))
 	body.WriteString("\n\n")
+	if m.availableUpdate.Version != "" && m.stage != stageUpdatePrompt {
+		body.WriteString(lipgloss.NewStyle().Width(max(1, width-4)).Align(lipgloss.Right).Render(m.updateNotification()))
+		body.WriteString("\n\n")
+	}
 
 	if m.err != nil {
 		body.WriteString(errorStyle.Render(m.err.Error()))
@@ -224,15 +228,30 @@ func (m Model) View() string {
 		body.WriteString("User-Agent\n" + m.userAgentInput.View())
 		body.WriteString("\n\n" + helpStyle.Render("ctrl+o open source • ctrl+u clear • enter apply and retry • esc back"))
 	case stageUpdatePrompt:
-		body.WriteString(titleStyle.Render("AnimiX update available") + "\n\n")
+		body.WriteString(titleStyle.Render("Update AnimiX") + "\n\n")
 		body.WriteString(fmt.Sprintf("Version %s is available (current %s).\n\n", m.availableUpdate.Version, m.currentVersion))
 		if m.loading {
-			body.WriteString(ansi.Strip(m.spinner.View()) + " Installing update…")
+			body.WriteString(m.updateProgress.View())
+			body.WriteString("\n\n" + helpStyle.Render("Downloading, verifying, and installing…"))
 		} else {
-			body.WriteString("Install it now?\n\n" + helpStyle.Render("y/enter install • n/esc skip"))
+			body.WriteString(m.updateProgress.View())
+			body.WriteString("\n\n" + helpStyle.Render("enter/i install • esc back"))
 		}
 	}
+	if m.availableUpdate.Version != "" && m.stage != stageUpdatePrompt {
+		body.WriteString("\n\n" + helpStyle.Render("u install AnimiX "+m.availableUpdate.Version))
+	}
 	return frame(body.String(), width)
+}
+
+func (m Model) updateNotification() string {
+	message := titleStyle.Render("Update available") + "\n" +
+		helpStyle.Render(m.availableUpdate.Version+" • press u to install")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accent).
+		Padding(0, 1).
+		Render(message)
 }
 
 func (m Model) sourcesView() string {

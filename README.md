@@ -130,9 +130,10 @@ automatically and retained as `.bak` files. Open only the settings file in
 animix -e
 ```
 
-Release builds check GitHub for updates in the background. When a newer release
-is available, AnimiX offers to run its checksum-verifying installer. Disable
-the check in TOML when desired:
+Release builds check GitHub for updates in the background. A small notification
+and footer shortcut appear when a newer release is available; press `u` to open
+the update screen and run the checksum-verifying installer. Disable the check
+in TOML when desired:
 
 ```toml
 check_updates = false

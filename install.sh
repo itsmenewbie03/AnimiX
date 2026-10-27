@@ -142,8 +142,13 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 TARGET="$INSTALL_DIR/animix$EXT"
-cp "$TMP/$ASSET" "$TARGET"
-chmod 0755 "$TARGET"
+STAGED="$INSTALL_DIR/.animix-update-$$$EXT"
+trap 'rm -rf "$TMP"; rm -f "$STAGED"' EXIT
+cp "$TMP/$ASSET" "$STAGED"
+chmod 0755 "$STAGED"
+# Replacing the directory entry keeps a running AnimiX process on its old
+# inode. Writing directly to TARGET fails with ETXTBSY on Linux.
+mv -f "$STAGED" "$TARGET"
 
 echo "Installed AnimiX $VERSION to $TARGET"
 echo

@@ -120,6 +120,23 @@ opening the TUI?
 go run . --diagnose
 ```
 
+AnimiX stores configuration in `~/.config/anymex-cli/config.toml`. Existing
+`config.json` files are migrated automatically and retained as
+`config.json.bak`. Open the active configuration in `$VISUAL`, `$EDITOR`, or
+the platform fallback editor with:
+
+```sh
+animix -e
+```
+
+Release builds check GitHub for updates in the background. When a newer release
+is available, AnimiX offers to run its checksum-verifying installer. Disable
+the check in TOML when desired:
+
+```toml
+check_updates = false
+```
+
 ## 🔨 Building
 
 The build produces a single `animix` binary:

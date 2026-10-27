@@ -223,6 +223,14 @@ func (m Model) View() string {
 		body.WriteString("Paste the exact User-Agent from the browser that produced the cookie. Cloudflare clearance may be bound to it.\n\n")
 		body.WriteString("User-Agent\n" + m.userAgentInput.View())
 		body.WriteString("\n\n" + helpStyle.Render("ctrl+o open source • ctrl+u clear • enter apply and retry • esc back"))
+	case stageUpdatePrompt:
+		body.WriteString(titleStyle.Render("AnimiX update available") + "\n\n")
+		body.WriteString(fmt.Sprintf("Version %s is available (current %s).\n\n", m.availableUpdate.Version, m.currentVersion))
+		if m.loading {
+			body.WriteString(ansi.Strip(m.spinner.View()) + " Installing update…")
+		} else {
+			body.WriteString("Install it now?\n\n" + helpStyle.Render("y/enter install • n/esc skip"))
+		}
 	}
 	return frame(body.String(), width)
 }

@@ -1,11 +1,70 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 )
+
+func TestDefaultUpdateChecksEnabledUnlessDisabled(t *testing.T) {
+	t.Parallel()
+	if !(Config{}).UpdatesEnabled() {
+		t.Fatal("updates should be enabled by default")
+	}
+	disabled := false
+	if (Config{CheckUpdates: &disabled}).UpdatesEnabled() {
+		t.Fatal("updates should respect check_updates = false")
+	}
+}
+
+func TestLoadMigratesLegacyJSONAndKeepsBackup(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	legacy := filepath.Join(directory, "config.json")
+	path := filepath.Join(directory, "config.toml")
+	want := Config{AniListToken: "secret", Repositories: []Repository{{URL: "https://example.test", Type: "anime"}}}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewStore(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AniListToken != want.AniListToken || len(got.Repositories) != 1 {
+		t.Fatalf("migrated config = %#v", got)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("TOML config missing: %v", err)
+	}
+	if _, err := os.Stat(legacy + ".bak"); err != nil {
+		t.Fatalf("JSON backup missing: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy JSON still active: %v", err)
+	}
+}
+
+func TestEnsureCreatesEditableTOML(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := NewStore(path).Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "" {
+		t.Fatal("empty config file")
+	}
+}
 
 func TestStoreAddAndRemove(t *testing.T) {
 	t.Parallel()

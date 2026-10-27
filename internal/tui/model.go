@@ -142,6 +142,9 @@ type Model struct {
 	currentVersion       string
 	availableUpdate      appupdate.Release
 	updateReturn         stage
+	toastMessage         string
+	toastWidth           int
+	toastID              int
 }
 
 type UpdateService interface {
@@ -315,6 +318,8 @@ type (
 		err     error
 	}
 	updateInstalledMsg   struct{ err error }
+	toastTickMsg         struct{ id int }
+	toastDismissMsg      struct{ id int }
 	cloudflareAppliedMsg struct {
 		credential appconfig.SourceCredential
 		err        error
@@ -815,10 +820,28 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, nil
 		}
-		m.status = "AnimiX updated to " + m.availableUpdate.Version + "; restart to use it"
+		m.status = ""
+		m.toastMessage = "AnimiX updated to " + m.availableUpdate.Version + "; restart to use it"
+		m.toastWidth = 0
+		m.toastID++
 		m.stage = m.updateReturn
 		m.availableUpdate = appupdate.Release{}
-		return m, m.updateProgress.SetPercent(1)
+		return m, tea.Batch(m.updateProgress.SetPercent(1), m.slideToast())
+	case toastTickMsg:
+		if msg.id != m.toastID || m.toastMessage == "" {
+			return m, nil
+		}
+		m.toastWidth = min(len([]rune(m.toastMessage)), m.toastWidth+4)
+		if m.toastWidth < len([]rune(m.toastMessage)) {
+			return m, m.slideToast()
+		}
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return toastDismissMsg{id: msg.id} })
+	case toastDismissMsg:
+		if msg.id == m.toastID {
+			m.toastMessage = ""
+			m.toastWidth = 0
+		}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -1322,6 +1345,11 @@ func (m Model) acceptsTextInput() bool {
 	}
 }
 
+func (m Model) slideToast() tea.Cmd {
+	id := m.toastID
+	return tea.Tick(20*time.Millisecond, func(time.Time) tea.Msg { return toastTickMsg{id: id} })
+}
+
 func openAniListAuthorization() tea.Cmd {
 	return func() tea.Msg {
 		return browserOpenedMsg{err: browser.Open(anilist.AuthorizeURL)}
@@ -1500,7 +1528,7 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 
 func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
 	m.playbackReturnHome = true
-	if entry.Duration > 0 && entry.Position/entry.Duration >= 0.99 {
+	if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
 		entry.Position = 0
 	}
 	entry.UpdatedAt = time.Now().UnixMilli()
@@ -1514,6 +1542,7 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 }
 
 func (m Model) resumePlayback(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
+	m.playbackReturnHome = true
 	source, ok := m.sourceByID(entry.SourceID)
 	if !ok {
 		m.err = fmt.Errorf("source %s is not loaded; cannot refresh the saved stream", entry.SourceName)
@@ -2078,7 +2107,7 @@ func (m Model) savedEpisodePosition(entry appconfig.ContinueEntry) (float64, flo
 		} else if normalizedEpisodeNumber(saved.EpisodeNumber) != normalizedEpisodeNumber(entry.EpisodeNumber) {
 			continue
 		}
-		if saved.Position <= 0 || saved.Duration <= 0 || saved.Position/saved.Duration >= 0.99 {
+		if saved.Position <= 0 || saved.Duration <= 0 || saved.Position/saved.Duration >= watchedThreshold {
 			return 0, 0
 		}
 		return saved.Position, saved.Duration
@@ -2126,7 +2155,7 @@ func (m *Model) refreshContinueWatching() {
 func (m *Model) refreshResumeWatching() {
 	items := make([]list.Item, 0, len(m.continueWatching))
 	for _, entry := range m.continueWatching {
-		if entry.Duration > 0 && entry.Position/entry.Duration >= 0.99 {
+		if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
 			continue
 		}
 		items = append(items, resumeWatchingListItem{entry: entry})

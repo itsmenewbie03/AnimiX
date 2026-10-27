@@ -48,11 +48,7 @@ func (m Model) View() string {
 		body.WriteString(m.search.View())
 		body.WriteString("\n\n" + helpStyle.Render("enter search • esc discover"))
 	case stageResults:
-		items := make([]string, len(m.results))
-		for i, media := range m.results {
-			items[i] = media.DisplayTitle()
-		}
-		body.WriteString(m.listView(items))
+		body.WriteString(m.mediaResultsView())
 		if m.resolvingEpisode != nil {
 			body.WriteString("\n" + helpStyle.Render("enter use match • a alternative title • s source • esc back"))
 		} else {
@@ -138,7 +134,7 @@ func (m Model) View() string {
 			}
 			installed := ""
 			if m.installer.IsInstalled(extension, m.extensionDirectory) {
-				installed = "[installed] "
+				installed = "[✓] "
 			}
 			items[i] = fmt.Sprintf("%s%s  %s  v%s%s", installed, extension.Name, strings.ToUpper(extension.Language), extension.Version, adult)
 		}
@@ -159,7 +155,7 @@ func (m Model) View() string {
 			}
 			installed := ""
 			if m.installer.IsInstalled(extension, m.extensionDirectory) {
-				installed = "[installed] "
+				installed = "[✓] "
 			}
 			items[i] = fmt.Sprintf("%s%s  %s  v%s%s", installed, extension.Name, strings.ToUpper(extension.Language), extension.Version, adult)
 		}
@@ -396,18 +392,25 @@ func (m Model) listViewFocused(items []string, focused bool) string {
 	}
 	var output strings.Builder
 	for i := start; i < end; i++ {
-		label := items[i]
-		if len(label) > max(20, m.width-8) {
-			label = label[:max(17, m.width-11)] + "…"
-		}
-		if focused && i == m.cursor {
-			marker := "  "
+		selectedRow := focused && i == m.cursor
+		selector := "  "
+		if selectedRow {
+			selector = "┃ "
 			if m.loading {
-				marker = m.spinner.View() + " "
+				selector = ansi.Strip(m.spinner.View()) + " "
 			}
-			output.WriteString(selected.Padding(0).Render(marker + label))
+		}
+		availableWidth := max(12, m.width-lipgloss.Width(selector)-8)
+		label := ansi.Truncate(items[i], availableWidth, "…")
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E8E6F0"))
+		if selectedRow {
+			labelStyle = labelStyle.Foreground(accent).Bold(true)
+		}
+		output.WriteString(lipgloss.NewStyle().Foreground(accent).Render(selector))
+		if strings.Contains(label, "[✓]") {
+			output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")).Bold(true).Render(label))
 		} else {
-			output.WriteString("  " + label)
+			output.WriteString(labelStyle.Render(label))
 		}
 		output.WriteString("\n")
 	}

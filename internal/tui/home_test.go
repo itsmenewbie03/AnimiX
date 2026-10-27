@@ -83,6 +83,36 @@ func TestUpdateBindingDoesNotStealTextInput(t *testing.T) {
 	}
 }
 
+func TestManualMatchResultsUseSingleRowsWithSelectionIndicator(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 30
+	model.stage = stageResults
+	model.loading = false
+	model.results = []catalog.Media{
+		{Title: "Current Show"},
+		{Title: "Older Show"},
+	}
+
+	view := ansi.Strip(model.mediaResultsView())
+	if !strings.Contains(view, "┃ Current Show\n  Older Show") {
+		t.Fatalf("result list is not single-row with selection indicator: %q", view)
+	}
+}
+
+func TestManualMatchResultShowsSpinnerOnSelectedRow(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 30
+	model.results = []catalog.Media{{Title: "Selected"}}
+	model.selectedSource = catalog.Source{Name: "AnimePahe"}
+	model.loading = true
+
+	if view := model.mediaResultsView(); !strings.Contains(view, ansi.Strip(model.spinner.View())) {
+		t.Fatalf("selected loading result has no spinner:\n%s", view)
+	}
+}
+
 func TestNewEpisodeEntriesMatchAnymeXHomeRules(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.October, 26, 12, 0, 0, 0, time.Local)
@@ -316,8 +346,8 @@ func TestCompletedPlaybackRecordsLocallyWatchedEpisode(t *testing.T) {
 		progress: &player.Progress{Position: 90, Duration: 100},
 	})
 	model = updated.(Model)
-	if command != nil {
-		t.Fatal("unlinked playback unexpectedly started AniList sync")
+	if command == nil || model.status != "" {
+		t.Fatalf("completed playback command=%v status=%q, want notification without header", command, model.status)
 	}
 	loaded, err := store.Load()
 	if err != nil {
@@ -348,11 +378,14 @@ func TestPlaybackReturnsToEpisodeSelector(t *testing.T) {
 		SourceID: "source", MediaURL: "/series", EpisodeNumber: "2",
 	}
 
-	updated, _ := model.Update(playerFinishedMsg{
+	updated, command := model.Update(playerFinishedMsg{
 		entry:    &playback,
 		progress: &player.Progress{Position: 95, Duration: 100},
 	})
 	model = updated.(Model)
+	if command == nil || model.status != "" {
+		t.Fatalf("finished playback command=%v status=%q, want notification without header", command, model.status)
+	}
 	if model.stage != stageEpisodes {
 		t.Fatalf("stage = %d, want episodes (%d)", model.stage, stageEpisodes)
 	}
@@ -554,12 +587,15 @@ func TestFinishingResumedPlaybackReturnsHomeAndClearsResumeItem(t *testing.T) {
 	model.continueWatching = []appconfig.ContinueEntry{playback}
 	model.refreshResumeWatching()
 
-	updated, _ := model.Update(playerFinishedMsg{
+	updated, command := model.Update(playerFinishedMsg{
 		entry:    &playback,
 		progress: &player.Progress{Position: 1349, Duration: 1420, Reason: "eof"},
 	})
 	model = updated.(Model)
 
+	if command == nil || model.status != "" {
+		t.Fatalf("finished playback command=%v status=%q, want notification without header", command, model.status)
+	}
 	if model.stage != stageSources {
 		t.Fatalf("stage = %d, want home (%d)", model.stage, stageSources)
 	}
@@ -908,7 +944,7 @@ func TestInstalledExtensionCanBeSelectedForRemoval(t *testing.T) {
 	model.width = 100
 	model.availableExtensions = []repository.Extension{extension}
 
-	if view := model.View(); !strings.Contains(view, "[installed]") || !strings.Contains(view, "d uninstall") {
+	if view := model.View(); !strings.Contains(view, "[✓]") || strings.Contains(view, "[installed]") || !strings.Contains(view, "d uninstall") {
 		t.Fatalf("installed extension actions missing:\n%s", view)
 	}
 	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
@@ -928,8 +964,8 @@ func TestLoadingSpinnerDecoratesSelectedResultWithoutAddingStatusRows(t *testing
 
 	idle := model
 	idle.loading = false
-	idleRow := ansi.Strip(idle.listView([]string{"One Piece"}))
-	loadingRow := ansi.Strip(model.listView([]string{"One Piece"}))
+	idleRow := ansi.Strip(idle.mediaResultsView())
+	loadingRow := ansi.Strip(model.mediaResultsView())
 	view := model.View()
 	if strings.Contains(view, "Working with the AnymeX") {
 		t.Fatalf("loading view added a top status row:\n%s", view)
@@ -939,6 +975,28 @@ func TestLoadingSpinnerDecoratesSelectedResultWithoutAddingStatusRows(t *testing
 	}
 	if titleColumn(idleRow, "One Piece") != titleColumn(loadingRow, "One Piece") {
 		t.Fatalf("selected result shifted while loading: idle=%q loading=%q", idleRow, loadingRow)
+	}
+}
+
+func TestSingleLineListsUseSelectionIndicatorAndSpinner(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 30
+	model.loading = false
+	model.cursor = 1
+
+	idle := ansi.Strip(model.listView([]string{"First", "Selected"}))
+	if !strings.Contains(idle, "  First\n┃ Selected") {
+		t.Fatalf("single-line list has wrong selection indicator: %q", idle)
+	}
+
+	model.loading = true
+	loading := ansi.Strip(model.listView([]string{"First", "Selected"}))
+	if !strings.Contains(loading, ansi.Strip(model.spinner.View())+" Selected") {
+		t.Fatalf("single-line list has no loading spinner: %q", loading)
+	}
+	if titleColumn(idle, "Selected") != titleColumn(loading, "Selected") {
+		t.Fatalf("selected title shifted while loading: idle=%q loading=%q", idle, loading)
 	}
 }
 

@@ -116,10 +116,45 @@ func TestFeedbackUsesNotificationsInsteadOfInlineBanners(t *testing.T) {
 		t.Fatalf("error notification missing:\n%s", view)
 	}
 
-	updated, command = model.Update(browserOpenedMsg{})
+	model.status = "status feedback"
+	updated, command = model.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	model = updated.(Model)
 	if command == nil || model.status != "" {
 		t.Fatalf("status was not migrated to a notification: command=%v status=%q", command, model.status)
+	}
+}
+
+func TestDisruptiveNavigationActionsStillNotify(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		stage stage
+		msg   tea.Msg
+		want  string
+	}{
+		{name: "AniList browser", stage: stageAniListToken, msg: browserOpenedMsg{}, want: "AniList authorization opened in your browser"},
+		{name: "source browser", stage: stageCloudflareCookie, msg: browserOpenedMsg{}, want: "Source domain opened in your browser"},
+		{name: "AniList logout", stage: stageAniListLibrary, msg: aniListLogoutMsg{}, want: "Signed out of AniList"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			model := New(nil, nil, "", "mpv")
+			model.loading = false
+			model.width, model.height = 100, 40
+			model.stage = test.stage
+
+			raw, _ := model.update(test.msg)
+			if status := raw.(Model).status; status != test.want {
+				t.Fatalf("status = %q, want %q", status, test.want)
+			}
+			updated, command := model.Update(test.msg)
+			model = updated.(Model)
+			if command == nil || model.status != "" {
+				t.Fatalf("feedback was not converted to a notification: command=%v status=%q", command, model.status)
+			}
+		})
 	}
 }
 
@@ -1320,6 +1355,33 @@ func TestPlaybackMediaTitle(t *testing.T) {
 				t.Fatalf("playbackMediaTitle() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestResumeMetadataEnrichesPlaybackTitleBeforeLoadingVideos(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	entry := appconfig.ContinueEntry{AniListMediaID: 42, EpisodeNumber: "5", Title: "BOFURI"}
+	model.pendingPlayback = &entry
+	model.selectedEpisode = catalog.Episode{EpisodeNumber: "5", Name: "Episode 5"}
+
+	updated, command := model.Update(videosMsg{
+		items:           []catalog.Video{{URL: "https://example.test/video.m3u8"}},
+		episodeMetadata: &anilist.EpisodeMetadata{Title: "Defense and Christmas"},
+		malID:           123,
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("resume metadata did not continue to video loading")
+	}
+	if model.selectedEpisode.Title != "Defense and Christmas" {
+		t.Fatalf("resume episode title = %q", model.selectedEpisode.Title)
+	}
+	if model.malID != 123 {
+		t.Fatalf("resume MAL ID = %d, want 123", model.malID)
+	}
+	if got := playbackMediaTitle(entry.Title, model.selectedEpisode); got != "BOFURI — Defense and Christmas (EP 5)" {
+		t.Fatalf("resume playback title = %q", got)
 	}
 }
 

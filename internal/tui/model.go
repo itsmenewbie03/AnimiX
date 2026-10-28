@@ -875,7 +875,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.notifier.Notify(notification.Notice{
 				ID: "update-available", Title: "Update available",
 				Message: msg.release.Version + " • press u to install",
-				Level:   notification.Info, Timeout: -1,
+				Level:   notification.Info,
 			})
 		}
 		return m, nil

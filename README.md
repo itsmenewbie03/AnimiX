@@ -166,14 +166,16 @@ CI runs tests, `go vet`, and a build on every push and pull request. Pushing a
 ./animix
 ```
 
-Use the arrow keys or `j`/`k` to move, `Enter` to select, `Esc` to go back, and
-`q` to quit. Handy shortcuts:
+Use the arrow keys or `j`/`k` to move, `gg`/`G` to jump to the first/last item,
+`Enter` to select, `Esc` to go back, and `q` to quit. Press `?` anywhere outside
+a text field for the complete categorized shortcut reference.
 
 | Key                                    | What it does                                         |
 | -------------------------------------- | ---------------------------------------------------- |
-| `h` / `l`, `Tab`, `←` / `→`, `1` / `2` | Switch between Anime and Manga                       |
-| `w`                                    | Resume your most recent local playback               |
-| `d` or `/`                             | Open Discover and search with an installed source    |
+| `1` / `2`                              | Switch between Anime and Manga                       |
+| `h` / `l`, `Tab`, `←` / `→`            | Switch Home feeds                                    |
+| `/` / `c`                              | Filter the active Home feed / clear its filter       |
+| `d`                                    | Open Discover and search with an installed source    |
 | `t`                                    | Connect or manage AniList tracking                   |
 | `r`                                    | Manage extension repositories                        |
 | `space`                                | Toggle **Remember server** on the stream screen      |
@@ -184,10 +186,13 @@ Use the arrow keys or `j`/`k` to move, `Enter` to select, `Esc` to go back, and
 
 ## 🏠 Home, Episodes & History
 
-The Anime tab mirrors AnymeX's flow: recent **New Episodes** for shows with
-unwatched released episodes, plus a separate **Continue Watching** list of
-AniList entries with `CURRENT` status. Finished shows drop off New Episodes
-after seven days.
+The Anime Home uses full-height tabs for **Resume**, **New Episodes**, and
+**Watching**. Resume keeps incomplete local playback ordered by recent activity.
+New Episodes mirrors AnymeX's release rules and sorts recent unwatched releases
+by release date. Watching preserves AniList's recently-updated order for entries
+with `CURRENT` status. A title may intentionally appear in both New Episodes and
+Watching, matching AnymeX. Finished shows drop off New Episodes after seven
+days.
 
 - Selecting a New Episodes card searches with the remembered anime source,
   opens the closest match automatically, and highlights the next unwatched
@@ -317,9 +322,9 @@ While browsing extensions, press `/` to search by name or package, `l` to cycle
 the language filter, and `c` to clear both filters. Installed entries are marked
 `[installed]`; select one and press `d` to unload it and remove its JAR.
 
-Installed sources are not shown on Home. Press `d` (or `/`) to open Discover,
-choose an installed source, and search with it. Continue Watching and New
-Episodes remain separate selectable lists on the Anime home tab.
+Installed sources are not shown on Home. Press `d` to open Discover, choose an
+installed source, and search with it. Resume, New Episodes, and Watching remain
+separate filterable tabs on Anime Home.
 
 ## 🎯 AniList Tracking
 

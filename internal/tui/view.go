@@ -229,7 +229,11 @@ func (m Model) View() string {
 		body.WriteString("\n\n" + helpStyle.Render("u install AnimiX "+m.availableUpdate.Version))
 	}
 	base := frame(body.String(), width)
-	return notification.Overlay(base, m.notifier.View(), width, 1)
+	base = notification.Overlay(base, m.notifier.View(), width, 1)
+	if m.showKeyHelp {
+		return m.keyHelpView()
+	}
+	return base
 }
 
 func (m Model) updateProgressLabel() string {
@@ -252,59 +256,78 @@ func (m Model) updateProgressLabel() string {
 
 func (m Model) sourcesView() string {
 	var output strings.Builder
-	animeTab := helpStyle.Render(" Anime ")
-	mangaTab := helpStyle.Render(" Manga ")
+	animeTab := helpStyle.Render(" 1 Anime ")
+	mangaTab := helpStyle.Render(" 2 Manga ")
 	if m.homeType == "anime" {
-		animeTab = selected.Render("Anime")
+		animeTab = selected.Render("1 Anime")
 	} else {
-		mangaTab = selected.Render("Manga")
+		mangaTab = selected.Render("2 Manga")
 	}
 	output.WriteString(animeTab + "  " + mangaTab)
-	output.WriteString("\n" + helpStyle.Render("h/l or tab/←/→ switch • 1 anime • 2 manga") + "\n\n")
+	output.WriteString("\n" + helpStyle.Render("1/2 switch media type") + "\n\n")
 
 	if m.homeType == "anime" {
-		loadingSelection := m.loading && m.resolvingEpisode != nil
-		resumeLoading := m.loading && m.pendingPlayback != nil
-		if len(m.resumeWatchingList.Items()) > 0 {
-			output.WriteString(homeSectionTitle("Resume Watching", m.homeFocus == homeFocusResumeWatching) + "\n")
-			resumeList := m.resumeWatchingList
-			resumeList.SetDelegate(newEpisodeDelegate(m.homeFocus == homeFocusResumeWatching, loadingSelection || resumeLoading, ansi.Strip(m.spinner.View())))
-			output.WriteString(resumeList.View())
-			output.WriteString("\n")
+		output.WriteString(homeFeedTab("Resume", len(m.resumeWatchingList.Items()), m.homeFocus == homeFocusResumeWatching) + "  ")
+		output.WriteString(homeFeedTab("New Episodes", len(m.newEpisodesList.Items()), m.homeFocus == homeFocusNewEpisodes) + "  ")
+		output.WriteString(homeFeedTab("Watching", len(m.continueWatchingList.Items()), m.homeFocus == homeFocusContinueWatching))
+		output.WriteString("\n" + helpStyle.Render("tab/shift+tab or h/l switch feed") + "\n\n")
+
+		active := m.activeHomeList()
+		if active != nil {
+			if active.SettingFilter() {
+				output.WriteString(active.FilterInput.View() + "\n\n")
+			} else if active.FilterValue() != "" {
+				output.WriteString(helpStyle.Render("Filter: "+active.FilterValue()+"  •  / edit  •  c clear") + "\n\n")
+			}
+			activeList := *active
+			loadingSelection := m.loading && m.resolvingEpisode != nil
+			if m.homeFocus == homeFocusResumeWatching {
+				loadingSelection = m.loading && (m.resolvingEpisode != nil || m.pendingPlayback != nil)
+			}
+			activeList.SetDelegate(newEpisodeDelegate(true, loadingSelection, ansi.Strip(m.spinner.View())))
+			if len(activeList.VisibleItems()) == 0 {
+				message := homeFeedEmptyMessage(m.homeFocus)
+				if active.FilterValue() != "" {
+					message = "No titles match this filter."
+				}
+				output.WriteString(helpStyle.Render(message) + "\n")
+			} else {
+				output.WriteString(activeList.View())
+			}
 		}
-		if len(m.newEpisodesList.Items()) > 0 {
-			output.WriteString(homeSectionTitle("New Episodes", m.homeFocus == homeFocusNewEpisodes) + "\n")
-			episodeList := m.newEpisodesList
-			episodeList.SetDelegate(newEpisodeDelegate(m.homeFocus == homeFocusNewEpisodes, loadingSelection, ansi.Strip(m.spinner.View())))
-			output.WriteString(episodeList.View())
-			output.WriteString("\n")
-		}
-		if len(m.continueWatchingList.Items()) > 0 {
-			output.WriteString(homeSectionTitle("Continue Watching", m.homeFocus == homeFocusContinueWatching) + "\n")
-			continueList := m.continueWatchingList
-			continueList.SetDelegate(newEpisodeDelegate(m.homeFocus == homeFocusContinueWatching, loadingSelection, ansi.Strip(m.spinner.View())))
-			output.WriteString(continueList.View())
-			output.WriteString("\n")
-		}
+	} else {
+		output.WriteString(helpStyle.Render("Manga playback is not available yet. Use Discover to browse installed manga sources.") + "\n")
 	}
 
-	hasHomeItems := m.homeType == "anime" && (len(m.resumeWatchingList.Items()) > 0 || len(m.newEpisodesList.Items()) > 0 || len(m.continueWatchingList.Items()) > 0)
-	output.WriteString(homeHelp(hasHomeItems))
+	output.WriteString("\n" + homeHelp(m.homeType == "anime" && m.currentLength() > 0))
 	return output.String()
 }
 
-func homeSectionTitle(label string, focused bool) string {
-	marker, style := "◇", helpStyle
-	if focused {
-		marker, style = "◆", titleStyle
+func homeFeedTab(label string, count int, active bool) string {
+	value := fmt.Sprintf("%s %d", label, count)
+	if active {
+		return selected.Render(value)
 	}
-	return style.Render(marker + " " + label)
+	return helpStyle.Render(" " + value + " ")
 }
 
-func homeHelp(hasNewEpisodes bool) string {
-	controls := "h/l tabs • d discover • r extensions • t AniList • q quit"
-	if hasNewEpisodes {
-		controls = "↑/↓ or j/k move • enter open • " + controls
+func homeFeedEmptyMessage(feed homeFocus) string {
+	switch feed {
+	case homeFocusResumeWatching:
+		return "Nothing to resume. Partially watched episodes appear here."
+	case homeFocusNewEpisodes:
+		return "No newly released episodes for tracked anime."
+	case homeFocusContinueWatching:
+		return "No anime currently marked as watching in AniList."
+	default:
+		return "Nothing to show."
+	}
+}
+
+func homeHelp(hasItems bool) string {
+	controls := "d discover • r repositories • t AniList • ? help • q quit"
+	if hasItems {
+		controls = "j/k move • gg/G first/last • enter open • / filter • " + controls
 	}
 	return helpStyle.Render(controls)
 }

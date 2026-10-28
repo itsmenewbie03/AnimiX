@@ -123,7 +123,7 @@ func main() {
 		return
 	}
 
-	options := []tui.Option{}
+	options := []tui.Option{tui.WithAutoPlayNextEpisode(config.AutoPlayNextEpisode)}
 	if config.UpdatesEnabled() {
 		options = append(options, tui.WithUpdateCheck(appupdate.NewClient(), version))
 	}
@@ -211,9 +211,9 @@ func normalizeInstallArgs(args []string) []string {
 func defaultExtensionDirectory() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join("AnymeX", "Extensions", "Aniyomi")
+		return filepath.Join("AnimiX", "Extensions", "Aniyomi")
 	}
-	return filepath.Join(home, "Documents", "AnymeX", "Extensions", "Aniyomi")
+	return filepath.Join(home, "Documents", "AnimiX", "Extensions", "Aniyomi")
 }
 
 func fatal(err error) {

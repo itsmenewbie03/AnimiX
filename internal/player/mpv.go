@@ -50,6 +50,9 @@ type Chapter struct {
 
 func MPV(executable string, video catalog.Video) *exec.Cmd {
 	args := []string{"--force-window=yes", "--no-save-position-on-quit"}
+	if title := strings.TrimSpace(video.Title); title != "" {
+		args = append(args, "--title="+title, "--force-media-title="+title)
+	}
 	args = append(args, networkArguments...)
 	if logPath := os.Getenv("ANIMIX_MPV_LOG"); logPath != "" {
 		args = append(args, "--log-file="+logPath)
@@ -76,7 +79,7 @@ func MPV(executable string, video catalog.Video) *exec.Cmd {
 }
 
 func MPVSession(executable string, video catalog.Video, start float64, chapters ...Chapter) (*Session, error) {
-	directory, err := os.MkdirTemp("", "anymex-mpv-")
+	directory, err := os.MkdirTemp("", "animix-mpv-")
 	if err != nil {
 		return nil, fmt.Errorf("create mpv progress directory: %w", err)
 	}

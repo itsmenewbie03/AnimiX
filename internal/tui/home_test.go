@@ -26,6 +26,8 @@ type fakeUpdateService struct {
 	installed bool
 }
 
+func boolPointer(value bool) *bool { return &value }
+
 func (service *fakeUpdateService) Check(context.Context, string) (appupdate.Release, error) {
 	return service.release, nil
 }
@@ -395,6 +397,362 @@ func TestPlaybackReturnsToEpisodeSelector(t *testing.T) {
 	selected, ok := model.episodeList.SelectedItem().(episodeListItem)
 	if !ok || !selected.localWatched {
 		t.Fatalf("returned episode = %#v", selected)
+	}
+}
+
+func TestCompletedPlaybackPromptsForNextEpisodeWhenSettingIsUnset(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	model := New(nil, store, "", "mpv")
+	model.width, model.height = 100, 40
+	model.stage = stageStreams
+	model.selectedSource = catalog.Source{ID: "source", Name: "Source", Type: "anime"}
+	model.details = catalog.Media{Title: "Series", URL: "/series", Episodes: []catalog.Episode{
+		{Name: "Episode 3", EpisodeNumber: "3"},
+		{Name: "Episode 2", EpisodeNumber: "2"},
+		{Name: "Episode 1", EpisodeNumber: "1"},
+	}}
+	model.setEpisodeItems()
+	model.episodeList.Select(2)
+	playback := appconfig.ContinueEntry{
+		Title: "Series", SourceID: "source", MediaURL: "/series",
+		EpisodeName: "Episode 1", EpisodeNumber: "1", Quality: "1080p",
+	}
+
+	updated, _ := model.Update(playerFinishedMsg{
+		entry: &playback, progress: &player.Progress{Position: 95, Duration: 100, Reason: "eof"},
+	})
+	model = updated.(Model)
+
+	if model.stage != stageAutoPlayPrompt || model.autoPlay.phase != autoPlayPrompting {
+		t.Fatalf("autoplay prompt state = stage %d, phase %d", model.stage, model.autoPlay.phase)
+	}
+	if got := model.autoPlay.next.Number(); got != "2" || model.autoPlay.nextIndex != 1 {
+		t.Fatalf("next episode = %q at %d, want 2 at 1", got, model.autoPlay.nextIndex)
+	}
+	view := ansi.Strip(model.View())
+	for _, want := range []string{"Play next episode?", "Episode 2", "No", "Yes", "Always", "Never"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("autoplay prompt missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestAutoPlayPromptChoices(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		choice      int
+		wantSetting *bool
+		wantPlaying bool
+	}{
+		{name: "no once", choice: 0},
+		{name: "yes once", choice: 1, wantPlaying: true},
+		{name: "always", choice: 2, wantSetting: boolPointer(true), wantPlaying: true},
+		{name: "never", choice: 3, wantSetting: boolPointer(false)},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+			model := New(nil, store, "", "mpv")
+			model.width, model.height = 100, 40
+			model.loading = false
+			model.stage, model.cursor = stageAutoPlayPrompt, test.choice
+			model.details = catalog.Media{Title: "Series", URL: "/series", Episodes: []catalog.Episode{
+				{Name: "Episode 1", EpisodeNumber: "1"},
+				{Name: "Episode 2", EpisodeNumber: "2"},
+			}}
+			model.setEpisodeItems()
+			model.autoPlay = autoPlayState{
+				phase: autoPlayPrompting,
+				completed: appconfig.ContinueEntry{
+					Title: "Series", EpisodeName: "Episode 1", EpisodeNumber: "1",
+				},
+				next: model.details.Episodes[1], nextIndex: 1,
+			}
+
+			updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+			model = updated.(Model)
+			if test.wantPlaying {
+				if command == nil || !model.loading || model.stage != stageEpisodes || model.selectedEpisode.Number() != "2" {
+					t.Fatalf("next episode did not start: stage=%d loading=%t episode=%q command=%v", model.stage, model.loading, model.selectedEpisode.Number(), command)
+				}
+			} else if model.loading || model.stage != stageEpisodes {
+				t.Fatalf("autoplay did not stop at episodes: stage=%d loading=%t", model.stage, model.loading)
+			}
+			loaded, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantSetting == nil {
+				if loaded.AutoPlayNextEpisode != nil {
+					t.Fatalf("one-time choice persisted setting %v", *loaded.AutoPlayNextEpisode)
+				}
+			} else if loaded.AutoPlayNextEpisode == nil || *loaded.AutoPlayNextEpisode != *test.wantSetting {
+				t.Fatalf("persisted setting = %v, want %t", loaded.AutoPlayNextEpisode, *test.wantSetting)
+			}
+		})
+	}
+}
+
+func TestAutoPlayTrueBypassesPromptAndFalseNeverPrompts(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "always", enabled: true},
+		{name: "never", enabled: false},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+			model := New(nil, store, "", "mpv", WithAutoPlayNextEpisode(&test.enabled))
+			model.width, model.height = 100, 40
+			model.loading = false
+			model.stage = stageStreams
+			model.selectedSource = catalog.Source{ID: "source", Type: "anime"}
+			model.details = catalog.Media{URL: "/series", Episodes: []catalog.Episode{
+				{EpisodeNumber: "1"}, {EpisodeNumber: "2"},
+			}}
+			model.setEpisodeItems()
+			playback := appconfig.ContinueEntry{SourceID: "source", MediaURL: "/series", EpisodeNumber: "1"}
+
+			updated, command := model.Update(playerFinishedMsg{
+				entry: &playback, progress: &player.Progress{Position: 95, Duration: 100, Reason: "eof"},
+			})
+			model = updated.(Model)
+			if model.stage == stageAutoPlayPrompt {
+				t.Fatal("explicit setting unexpectedly opened prompt")
+			}
+			if test.enabled {
+				if command == nil || !model.loading || model.selectedEpisode.Number() != "2" {
+					t.Fatalf("always state did not start next episode: %#v", model.autoPlay)
+				}
+			} else if model.loading || model.stage != stageEpisodes {
+				t.Fatalf("never state started autoplay: stage=%d loading=%t", model.stage, model.loading)
+			}
+		})
+	}
+}
+
+func TestAutoPlayOnlyTriggersForNaturalCompletion(t *testing.T) {
+	t.Parallel()
+	if !shouldOfferAutoPlay(nil, player.Progress{Position: 90, Duration: 100, Reason: "eof"}) {
+		t.Fatal("clean completed EOF did not qualify")
+	}
+	for _, progress := range []player.Progress{
+		{Position: 89, Duration: 100, Reason: "eof"},
+		{Position: 95, Duration: 100, Reason: "quit"},
+		{Position: 95, Duration: 100, Reason: "error"},
+		{Position: 95, Duration: 100, Reason: "eof", ProxyFailure: true},
+	} {
+		if shouldOfferAutoPlay(nil, progress) {
+			t.Fatalf("non-natural completion qualified: %#v", progress)
+		}
+	}
+	if shouldOfferAutoPlay(fmt.Errorf("mpv failed"), player.Progress{Position: 95, Duration: 100, Reason: "eof"}) {
+		t.Fatal("failed player run qualified")
+	}
+}
+
+func TestNextEpisodeSelectionIgnoresProviderOrderAndSupportsFractions(t *testing.T) {
+	t.Parallel()
+	for _, episodes := range [][]catalog.Episode{
+		{{EpisodeNumber: "13"}, {EpisodeNumber: "12.5"}, {EpisodeNumber: "12"}},
+		{{EpisodeNumber: "12"}, {EpisodeNumber: "13"}, {EpisodeNumber: "12.5"}},
+	} {
+		next, _, outcome := nextEpisodeAfter(episodes, "12")
+		if outcome != nextEpisodeFound || next.Number() != "12.5" {
+			t.Fatalf("next episode = %q, outcome %d", next.Number(), outcome)
+		}
+	}
+	if _, _, outcome := nextEpisodeAfter([]catalog.Episode{{EpisodeNumber: "13"}}, "special"); outcome != nextEpisodeUnknown {
+		t.Fatalf("unparseable current episode outcome = %d", outcome)
+	}
+	if _, _, outcome := nextEpisodeAfter([]catalog.Episode{{EpisodeNumber: "13"}}, "NaN"); outcome != nextEpisodeUnknown {
+		t.Fatalf("non-finite current episode outcome = %d", outcome)
+	}
+}
+
+func TestAutoPlayEscBehavesLikeNo(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.stage = stageAutoPlayPrompt
+	model.details = catalog.Media{Episodes: []catalog.Episode{{EpisodeNumber: "1"}, {EpisodeNumber: "2"}}}
+	model.setEpisodeItems()
+	model.autoPlay = autoPlayState{
+		phase:     autoPlayPrompting,
+		completed: appconfig.ContinueEntry{EpisodeNumber: "1"},
+		next:      model.details.Episodes[1],
+		nextIndex: 1,
+	}
+
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if command == nil || model.stage != stageEpisodes || model.autoPlay.phase != autoPlayIdle || model.autoPlayNextEpisode != nil {
+		t.Fatalf("escape result = stage %d phase %d setting %v command=%v", model.stage, model.autoPlay.phase, model.autoPlayNextEpisode, command)
+	}
+}
+
+func TestResumeCompletionLoadsDetailsBeforePrompting(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	model := New(nil, store, "", "mpv")
+	model.width, model.height = 100, 40
+	model.stage = stageStreams
+	model.playbackReturnHome = true
+	model.selectedSource = catalog.Source{ID: "source", Type: "anime"}
+	model.selectedMedia = catalog.Media{Title: "Series", URL: "/series"}
+	playback := appconfig.ContinueEntry{Title: "Series", SourceID: "source", MediaURL: "/series", EpisodeNumber: "1"}
+
+	updated, command := model.Update(playerFinishedMsg{
+		entry: &playback, progress: &player.Progress{Position: 95, Duration: 100, Reason: "eof"},
+	})
+	model = updated.(Model)
+	if command == nil || model.stage != stageAutoPlayPrompt || model.autoPlay.phase != autoPlayLoadingDetails || !model.loading {
+		t.Fatalf("details lookup state = stage %d phase %d loading %t command=%v", model.stage, model.autoPlay.phase, model.loading, command)
+	}
+
+	updated, _ = model.Update(detailsMsg{media: catalog.Media{Title: "Series", URL: "/series", Episodes: []catalog.Episode{
+		{EpisodeNumber: "2"}, {EpisodeNumber: "1"},
+	}}})
+	model = updated.(Model)
+	if model.autoPlay.phase != autoPlayPrompting || model.autoPlay.next.Number() != "2" || model.playbackReturnHome != true {
+		t.Fatalf("resume autoplay prompt = %#v", model.autoPlay)
+	}
+
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if model.stage != stageSources || model.playbackReturnHome {
+		t.Fatalf("declining resumed autoplay returned to stage %d", model.stage)
+	}
+}
+
+func TestAutoPlayUsesCurrentStreamBeforePersistentPreference(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.resolvingEpisode = &anilist.Entry{MediaID: 42}
+	model.streamPreferences = []appconfig.StreamPreference{{MediaID: 42, Value: "720p"}}
+	model.autoPlay = autoPlayState{preferredStream: "1080p (Dub)"}
+	videos := []catalog.Video{
+		{Quality: "720p", URL: "saved"},
+		{Quality: "1080p (Dub)", URL: "current"},
+	}
+	if index, ok := model.autoPlayVideoIndex(videos); !ok || index != 1 {
+		t.Fatalf("autoplay stream = %d, ok=%t", index, ok)
+	}
+	model.autoPlay.preferredStream = "missing"
+	if index, ok := model.autoPlayVideoIndex(videos); !ok || index != 0 {
+		t.Fatalf("saved fallback stream = %d, ok=%t", index, ok)
+	}
+}
+
+func TestAutoPlayStopsAtStreamPickerWhenNoSafeMatchExists(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.details = catalog.Media{Episodes: []catalog.Episode{{EpisodeNumber: "1"}, {EpisodeNumber: "2"}}}
+	model.setEpisodeItems()
+	model.autoPlay = autoPlayState{
+		phase: autoPlayLoadingStreams, next: model.details.Episodes[1], nextIndex: 1,
+		preferredStream: "missing",
+	}
+
+	updated, command := model.Update(videosMsg{items: []catalog.Video{
+		{Quality: "720p", URL: "a"}, {Quality: "1080p", URL: "b"},
+	}})
+	model = updated.(Model)
+	if command != nil || model.stage != stageStreams || model.autoPlay.phase != autoPlayChoosingStream {
+		t.Fatalf("stream fallback = stage %d phase %d command=%v", model.stage, model.autoPlay.phase, command)
+	}
+	if !strings.Contains(model.status, "Choose a stream") {
+		t.Fatalf("stream fallback status = %q", model.status)
+	}
+
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if model.stage != stageEpisodes || model.autoPlay.phase != autoPlayIdle {
+		t.Fatalf("cancelled stream fallback = stage %d phase %d", model.stage, model.autoPlay.phase)
+	}
+}
+
+func TestCloudflareRecoveryPreservesAutoPlayState(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		phase     autoPlayPhase
+		stage     stage
+		message   tea.Msg
+		operation cloudflareOperation
+	}{
+		{
+			name: "details", phase: autoPlayLoadingDetails, stage: stageAutoPlayPrompt,
+			message: detailsMsg{err: fmt.Errorf("Cloudflare challenge")}, operation: cloudflareDetails,
+		},
+		{
+			name: "streams", phase: autoPlayLoadingStreams, stage: stageEpisodes,
+			message: videosMsg{err: fmt.Errorf("Cloudflare challenge")}, operation: cloudflareVideos,
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			model := New(nil, nil, "", "mpv")
+			model.loading = true
+			model.stage = test.stage
+			model.autoPlay = autoPlayState{
+				phase: test.phase, completed: appconfig.ContinueEntry{EpisodeNumber: "1"},
+				next: catalog.Episode{EpisodeNumber: "2"}, nextIndex: 1,
+			}
+
+			updated, _ := model.Update(test.message)
+			model = updated.(Model)
+			if model.stage != stageCloudflareCookie || model.cloudflareOperation != test.operation ||
+				model.cloudflareReturn != test.stage || model.autoPlay.phase != test.phase ||
+				model.autoPlay.completed.EpisodeNumber != "1" {
+				t.Fatalf("Cloudflare recovery lost autoplay state: %#v", model.autoPlay)
+			}
+
+			updated, command := model.Update(cloudflareAppliedMsg{})
+			model = updated.(Model)
+			if command == nil || !model.loading || model.stage != test.stage || model.autoPlay.phase != test.phase {
+				t.Fatalf("Cloudflare retry lost autoplay state: stage=%d phase=%d loading=%t command=%v", model.stage, model.autoPlay.phase, model.loading, command)
+			}
+		})
+	}
+}
+
+func TestDelayedAniListUpdatePreservesNewerAutoPlayEpisode(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	model := New(nil, store, "", "mpv")
+	newer := appconfig.ContinueEntry{
+		Title: "Series", SourceID: "source", MediaURL: "/series", EpisodeNumber: "6",
+		AniListEntryID: 10, AniListMediaID: 99,
+	}
+	model.continueWatching = []appconfig.ContinueEntry{newer}
+	completed := newer
+	completed.EpisodeNumber = "5"
+
+	updated, _ := model.Update(aniListPlaybackUpdatedMsg{
+		entry:    anilist.Entry{ID: 10, MediaID: 99, Progress: 5, Total: 12, Status: "CURRENT", MediaStatus: "RELEASING"},
+		playback: completed,
+	})
+	model = updated.(Model)
+	if model.continueWatching[0].EpisodeNumber != "6" || model.continueWatching[0].AniListProgress != 5 {
+		t.Fatalf("merged playback = %#v", model.continueWatching[0])
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].EpisodeNumber != "6" {
+		t.Fatalf("persisted playback = %#v", loaded.ContinueWatching)
 	}
 }
 
@@ -774,6 +1132,50 @@ func TestEpisodeSubtitleUsesMetadataThenFallbacks(t *testing.T) {
 	}
 }
 
+func TestPlaybackMediaTitle(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		series  string
+		episode catalog.Episode
+		want    string
+	}{
+		{
+			name:    "English episode title",
+			series:  "BOFURI: I Don't Want to Get Hurt, so I'll Max Out My Defense. Season 2",
+			episode: catalog.Episode{EpisodeNumber: "5", Title: "Maxing Defense and Tentacles."},
+			want:    "BOFURI: I Don't Want to Get Hurt, so I'll Max Out My Defense. Season 2 — Maxing Defense and Tentacles. (EP 5)",
+		},
+		{
+			name:    "missing English episode title",
+			series:  "Even the Student Council Has Its Holes!",
+			episode: catalog.Episode{EpisodeNumber: "3"},
+			want:    "Even the Student Council Has Its Holes! — Episode 3",
+		},
+		{
+			name:    "generic episode title",
+			series:  "Series",
+			episode: catalog.Episode{EpisodeNumber: "3", Title: "Episode 3"},
+			want:    "Series — Episode 3",
+		},
+		{
+			name:    "fractional episode",
+			series:  "Series",
+			episode: catalog.Episode{EpisodeNumber: "12.5", Title: "Special"},
+			want:    "Series — Special (EP 12.5)",
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := playbackMediaTitle(test.series, test.episode); got != test.want {
+				t.Fatalf("playbackMediaTitle() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSavedStreamPreferenceAutoPlaysForSameMedia(t *testing.T) {
 	t.Parallel()
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
@@ -967,7 +1369,7 @@ func TestLoadingSpinnerDecoratesSelectedResultWithoutAddingStatusRows(t *testing
 	idleRow := ansi.Strip(idle.mediaResultsView())
 	loadingRow := ansi.Strip(model.mediaResultsView())
 	view := model.View()
-	if strings.Contains(view, "Working with the AnymeX") {
+	if strings.Contains(view, "Working with AnimiX") {
 		t.Fatalf("loading view added a top status row:\n%s", view)
 	}
 	if !strings.Contains(loadingRow, ansi.Strip(model.spinner.View())+" One Piece") {
@@ -1030,7 +1432,7 @@ func TestLoadingSpinnerDecoratesSelectedHomeItem(t *testing.T) {
 	if strings.Contains(loadingView, "[0m") {
 		t.Fatalf("spinner leaked an ANSI reset sequence:\n%s", loadingView)
 	}
-	if strings.Contains(view, "Working with the AnymeX") {
+	if strings.Contains(view, "Working with AnimiX") {
 		t.Fatalf("loading view added a top status row:\n%s", view)
 	}
 }

@@ -70,7 +70,7 @@ func TestEpisodeMetadata(t *testing.T) {
 		if got := request.URL.Query().Get("anilist_id"); got != "116674" {
 			t.Errorf("anilist_id = %q", got)
 		}
-		fmt.Fprint(response, `{"mappings":{"mal_id":16498},"episodes":{"10":{"title":{"en":"The Battle","ja":"ザ・バトル"},"overview":"Episode overview","image":"https://example.com/10.jpg"},"S1":{"title":{"en":"Special"}}}}`)
+		fmt.Fprint(response, `{"mappings":{"mal_id":16498},"episodes":{"3":{"title":{"en":null,"ja":"プール掃除で水着回！"}},"10":{"title":{"en":"The Battle","ja":"ザ・バトル"},"overview":"Episode overview","image":"https://example.com/10.jpg"},"S1":{"title":{"en":"Special"}}}}`)
 	}))
 	defer server.Close()
 
@@ -85,6 +85,9 @@ func TestEpisodeMetadata(t *testing.T) {
 	}
 	if got := catalog.Episodes["10"]; got.Title != "The Battle" || got.Description != "Episode overview" || got.Image != "https://example.com/10.jpg" {
 		t.Fatalf("episode metadata = %#v", got)
+	}
+	if got := catalog.Episodes["3"].Title; got != "" {
+		t.Fatalf("episode without English metadata title = %q, want empty", got)
 	}
 }
 

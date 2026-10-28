@@ -103,7 +103,7 @@ go run .
 If your extensions live somewhere else:
 
 ```sh
-go run . --extensions /path/to/AnymeX/Extensions/Aniyomi
+go run . --extensions /path/to/AnimiX/Extensions/Aniyomi
 ```
 
 Testing unreleased runtime bridge changes? Pass your rebuilt JAR explicitly —
@@ -138,6 +138,14 @@ Disable the check in TOML when desired:
 
 ```toml
 check_updates = false
+```
+
+Next-episode playback is tri-state. Leave the setting out to ask after each
+completed episode, set it to `true` to always continue, or `false` to never
+prompt:
+
+```toml
+auto_play_next_episode = true
 ```
 
 ## 🔨 Building
@@ -190,13 +198,18 @@ after seven days.
 - Source and title mappings are remembered per AniList media ID.
 - Local mpv history stays separate from AniList. **Resume Watching** shows the
   newest incomplete playback first, records final position and duration when
-  mpv exits, and hides episodes at least 99% complete.
+  mpv exits, and hides episodes at least 90% complete.
 
 ## 📺 Playback & Streams
 
 Selecting an anime stream launches `mpv` with the required HTTP headers and
 subtitles, then returns you to the episode selector when playback ends.
 
+- After a cleanly completed episode, AnimiX can resolve and play the next
+  available episode. With `auto_play_next_episode` unset, the prompt offers
+  **No**, **Yes**, **Always**, and **Never**; the last two persist `true` or
+  `false` in `config.toml`. User quits, playback errors, and early stream
+  failures never advance automatically.
 - For AniList-linked titles, the stream screen has a **Remember server**
   checkbox. When enabled, the selected quality is saved for that media ID,
   marked `Default`, and auto-played on later episodes. A single available stream

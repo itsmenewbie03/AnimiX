@@ -279,19 +279,122 @@ func TestHomeTabKeysAndNewEpisodeSelection(t *testing.T) {
 
 	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	model = updated.(Model)
-	if model.homeType != "manga" || model.homeFocus != homeFocusNone {
-		t.Fatalf("l tab switch = type %q, focus %d", model.homeType, model.homeFocus)
+	if model.homeType != "anime" || model.homeFocus != homeFocusContinueWatching {
+		t.Fatalf("l feed switch = type %q, focus %d", model.homeType, model.homeFocus)
 	}
 	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	model = updated.(Model)
 	if model.homeType != "anime" || model.homeFocus != homeFocusNewEpisodes {
-		t.Fatalf("h tab switch = type %q, focus %d", model.homeType, model.homeFocus)
+		t.Fatalf("h feed switch = type %q, focus %d", model.homeType, model.homeFocus)
+	}
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	model = updated.(Model)
+	if model.homeType != "manga" || model.homeFocus != homeFocusNone {
+		t.Fatalf("2 media switch = type %q, focus %d", model.homeType, model.homeFocus)
+	}
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	model = updated.(Model)
+	if model.homeType != "anime" || model.homeFocus != homeFocusNewEpisodes {
+		t.Fatalf("1 media switch = type %q, focus %d", model.homeType, model.homeFocus)
 	}
 
 	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
 	if command == nil || !model.loading || model.selectedSource.ID != "anime" || model.search.Value() != "Selectable show" {
 		t.Fatalf("selection did not start source search: %#v", model)
+	}
+}
+
+func TestHomeFeedsRenderOneListAndPreserveOverlap(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.width, model.height = 100, 40
+	overlap := anilist.Entry{MediaID: 1, Title: "Appears in both", Type: "ANIME", Status: "CURRENT", MediaStatus: "RELEASING", Progress: 1, Available: 2}
+	model.trackingEntries = []anilist.Entry{overlap}
+	model.refreshNewEpisodes(time.Now())
+	model.refreshContinueWatching()
+	model.resumeWatchingList.SetItems([]list.Item{resumeWatchingListItem{entry: appconfig.ContinueEntry{Title: "Local resume", EpisodeNumber: "1"}}})
+
+	model.homeFocus = homeFocusNewEpisodes
+	view := ansi.Strip(model.sourcesView())
+	if !strings.Contains(view, "Appears in both") || strings.Contains(view, "Local resume") {
+		t.Fatalf("New Episodes feed rendered wrong list:\n%s", view)
+	}
+	model.homeFocus = homeFocusContinueWatching
+	view = ansi.Strip(model.sourcesView())
+	if !strings.Contains(view, "Appears in both") || strings.Contains(view, "Local resume") {
+		t.Fatalf("Watching feed rendered wrong list:\n%s", view)
+	}
+	if !strings.Contains(view, "Resume 1") || !strings.Contains(view, "New Episodes 1") || !strings.Contains(view, "Watching 1") {
+		t.Fatalf("feed counts missing:\n%s", view)
+	}
+}
+
+func TestHomeFilterAndVimListJumps(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.width, model.height = 100, 40
+	model.homeFocus = homeFocusContinueWatching
+	replaceHomeItems(&model.continueWatchingList, []list.Item{
+		continueWatchingListItem{entry: anilist.Entry{Title: "Alpha"}},
+		continueWatchingListItem{entry: anilist.Entry{Title: "Beta"}},
+		continueWatchingListItem{entry: anilist.Entry{Title: "Gamma"}},
+	})
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	model = updated.(Model)
+	if model.continueWatchingList.Index() != 2 {
+		t.Fatalf("G index = %d, want 2", model.continueWatchingList.Index())
+	}
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(Model)
+	if model.continueWatchingList.Index() != 0 {
+		t.Fatalf("gg index = %d, want 0", model.continueWatchingList.Index())
+	}
+
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	model = updated.(Model)
+	if !model.continueWatchingList.SettingFilter() {
+		t.Fatal("/ did not open the active feed filter")
+	}
+	model.continueWatchingList.SetFilterText("a")
+	ordered := model.continueWatchingList.VisibleItems()
+	if len(ordered) != 3 || ordered[0].(continueWatchingListItem).entry.Title != "Alpha" || ordered[2].(continueWatchingListItem).entry.Title != "Gamma" {
+		t.Fatalf("filter changed feed order: %#v", ordered)
+	}
+	model.continueWatchingList.SetFilterText("Beta")
+	if got := model.continueWatchingList.VisibleItems(); len(got) != 1 || got[0].(continueWatchingListItem).entry.Title != "Beta" {
+		t.Fatalf("filtered items = %#v", got)
+	}
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model = updated.(Model)
+	if model.continueWatchingList.FilterValue() != "" || len(model.continueWatchingList.VisibleItems()) != 3 {
+		t.Fatal("c did not clear the active feed filter")
+	}
+}
+
+func TestQuestionMarkShowsCategorizedKeyHelp(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.width, model.height = 100, 40
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	model = updated.(Model)
+	view := ansi.Strip(model.View())
+	for _, want := range []string{"Keyboard shortcuts", "GLOBAL", "NAVIGATION", "HOME", "ANIME & PLAYBACK"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("key help missing %q:\n%s", want, view)
+		}
+	}
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	model = updated.(Model)
+	if command != nil || model.showKeyHelp {
+		t.Fatal("q did not close key help without quitting")
 	}
 }
 

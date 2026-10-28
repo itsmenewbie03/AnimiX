@@ -89,6 +89,9 @@ type Model struct {
 	stage                stage
 	homeType             string
 	homeFocus            homeFocus
+	showKeyHelp          bool
+	keyHelpScroll        int
+	pendingTopKey        bool
 	width                int
 	height               int
 	cursor               int
@@ -396,7 +399,9 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	newEpisodes.Title = "New Episodes"
 	newEpisodes.SetShowTitle(false)
 	newEpisodes.SetShowStatusBar(false)
-	newEpisodes.SetFilteringEnabled(false)
+	newEpisodes.SetFilteringEnabled(true)
+	newEpisodes.SetShowFilter(false)
+	newEpisodes.Filter = list.UnsortedFilter
 	newEpisodes.SetShowHelp(false)
 	newEpisodes.SetShowPagination(false)
 	newEpisodes.DisableQuitKeybindings()
@@ -404,14 +409,18 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	continueWatching := list.New(nil, newEpisodeDelegate(false, false, ""), 60, 8)
 	continueWatching.SetShowTitle(false)
 	continueWatching.SetShowStatusBar(false)
-	continueWatching.SetFilteringEnabled(false)
+	continueWatching.SetFilteringEnabled(true)
+	continueWatching.SetShowFilter(false)
+	continueWatching.Filter = list.UnsortedFilter
 	continueWatching.SetShowHelp(false)
 	continueWatching.SetShowPagination(false)
 	continueWatching.DisableQuitKeybindings()
 	resumeWatching := list.New(nil, newEpisodeDelegate(false, false, ""), 60, 5)
 	resumeWatching.SetShowTitle(false)
 	resumeWatching.SetShowStatusBar(false)
-	resumeWatching.SetFilteringEnabled(false)
+	resumeWatching.SetFilteringEnabled(true)
+	resumeWatching.SetShowFilter(false)
+	resumeWatching.Filter = list.UnsortedFilter
 	resumeWatching.SetShowHelp(false)
 	resumeWatching.SetShowPagination(false)
 	resumeWatching.DisableQuitKeybindings()
@@ -497,6 +506,15 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		progressModel, cmd := m.updateProgress.Update(msg)
 		m.updateProgress = progressModel.(progress.Model)
 		return m, cmd
+	case list.FilterMatchesMsg:
+		if m.stage == stageSources && m.homeType == "anime" {
+			if active := m.activeHomeList(); active != nil {
+				updated, cmd := active.Update(msg)
+				*active = updated
+				return m, cmd
+			}
+		}
+		return m, nil
 	case sourcesMsg:
 		m.loading, m.err = false, msg.err
 		m.sources = msg.items
@@ -969,8 +987,32 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
+	if m.showKeyHelp {
+		switch key.String() {
+		case "?", "esc", "q":
+			m.showKeyHelp, m.keyHelpScroll = false, 0
+		case "up", "k":
+			m.keyHelpScroll = max(0, m.keyHelpScroll-1)
+		case "down", "j":
+			m.keyHelpScroll = min(m.maxKeyHelpScroll(), m.keyHelpScroll+1)
+		case "pgup":
+			m.keyHelpScroll = max(0, m.keyHelpScroll-max(1, m.height-10))
+		case "pgdown":
+			m.keyHelpScroll = min(m.maxKeyHelpScroll(), m.keyHelpScroll+max(1, m.height-10))
+		}
+		return m, nil
+	}
+	if key.String() == "?" && !m.acceptsTextInput() {
+		m.showKeyHelp, m.keyHelpScroll = true, 0
+		return m, nil
+	}
 	if m.loading {
 		return m, nil
+	}
+	if m.stage == stageSources && m.homeType == "anime" {
+		if active := m.activeHomeList(); active != nil && active.SettingFilter() {
+			return m, m.updateHomeFilter(key)
+		}
 	}
 	if m.stage == stageAutoPlayPrompt && m.autoPlay.phase == autoPlayPrompting {
 		return m.handleAutoPlayPromptKey(key)
@@ -1195,6 +1237,20 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if key.String() == "g" {
+		if m.pendingTopKey {
+			m.pendingTopKey = false
+			m.jumpToFirst()
+			return m, nil
+		}
+		m.pendingTopKey = true
+		return m, nil
+	}
+	m.pendingTopKey = false
+	if key.String() == "G" {
+		m.jumpToLast()
+		return m, nil
+	}
 
 	switch key.String() {
 	case "q":
@@ -1204,27 +1260,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "up", "k":
 		if m.stage == stageSources {
-			if m.homeFocus == homeFocusResumeWatching {
-				if m.resumeWatchingList.Index() > 0 {
-					m.resumeWatchingList.Select(m.resumeWatchingList.Index() - 1)
-				}
-			} else if m.homeFocus == homeFocusNewEpisodes {
-				if m.newEpisodesList.Index() > 0 {
-					m.newEpisodesList.Select(m.newEpisodesList.Index() - 1)
-				} else if len(m.resumeWatchingList.Items()) > 0 {
-					m.homeFocus = homeFocusResumeWatching
-					m.resumeWatchingList.Select(len(m.resumeWatchingList.Items()) - 1)
-				}
-			} else if m.homeFocus == homeFocusContinueWatching {
-				if m.continueWatchingList.Index() > 0 {
-					m.continueWatchingList.Select(m.continueWatchingList.Index() - 1)
-				} else if len(m.newEpisodesList.Items()) > 0 {
-					m.homeFocus = homeFocusNewEpisodes
-					m.newEpisodesList.Select(len(m.newEpisodesList.Items()) - 1)
-				} else if len(m.resumeWatchingList.Items()) > 0 {
-					m.homeFocus = homeFocusResumeWatching
-					m.resumeWatchingList.Select(len(m.resumeWatchingList.Items()) - 1)
-				}
+			if active := m.activeHomeList(); active != nil {
+				active.CursorUp()
 			}
 			return m, nil
 		}
@@ -1239,27 +1276,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "down", "j":
 		if m.stage == stageSources {
-			if m.homeFocus == homeFocusResumeWatching {
-				if m.resumeWatchingList.Index()+1 < len(m.resumeWatchingList.Items()) {
-					m.resumeWatchingList.Select(m.resumeWatchingList.Index() + 1)
-				} else if len(m.newEpisodesList.Items()) > 0 {
-					m.homeFocus = homeFocusNewEpisodes
-					m.newEpisodesList.Select(0)
-				} else if len(m.continueWatchingList.Items()) > 0 {
-					m.homeFocus = homeFocusContinueWatching
-					m.continueWatchingList.Select(0)
-				}
-			} else if m.homeFocus == homeFocusNewEpisodes {
-				if m.newEpisodesList.Index()+1 < len(m.newEpisodesList.Items()) {
-					m.newEpisodesList.Select(m.newEpisodesList.Index() + 1)
-				} else if len(m.continueWatchingList.Items()) > 0 {
-					m.homeFocus = homeFocusContinueWatching
-					m.continueWatchingList.Select(0)
-				}
-			} else if m.homeFocus == homeFocusContinueWatching {
-				if m.continueWatchingList.Index()+1 < len(m.continueWatchingList.Items()) {
-					m.continueWatchingList.Select(m.continueWatchingList.Index() + 1)
-				}
+			if active := m.activeHomeList(); active != nil {
+				active.CursorDown()
 			}
 			return m, nil
 		}
@@ -1274,31 +1292,23 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 		return m, nil
-	case "tab", "left", "right", "h", "l", "1", "2":
+	case "tab", "shift+tab", "left", "right", "h", "l", "1", "2":
 		if m.stage == stageSources {
 			if key.String() == "1" {
 				m.homeType = "anime"
 			} else if key.String() == "2" {
 				m.homeType = "manga"
-			} else if key.String() == "h" || key.String() == "left" {
-				m.homeType = "anime"
-			} else if key.String() == "l" || key.String() == "right" {
-				m.homeType = "manga"
-			} else if m.homeType == "anime" {
-				m.homeType = "manga"
 			} else {
-				m.homeType = "anime"
+				delta := 1
+				if key.String() == "shift+tab" || key.String() == "h" || key.String() == "left" {
+					delta = -1
+				}
+				m.cycleHomeFeed(delta)
+				return m, nil
 			}
 			m.cursor = 0
-			m.resumeWatchingList.Select(0)
-			m.newEpisodesList.Select(0)
-			m.continueWatchingList.Select(0)
-			if m.homeType == "anime" && len(m.resumeWatchingList.Items()) > 0 {
-				m.homeFocus = homeFocusResumeWatching
-			} else if m.homeType == "anime" && len(m.newEpisodesList.Items()) > 0 {
-				m.homeFocus = homeFocusNewEpisodes
-			} else if m.homeType == "anime" && len(m.continueWatchingList.Items()) > 0 {
-				m.homeFocus = homeFocusContinueWatching
+			if m.homeType == "anime" {
+				m.normalizeHomeFocus()
 			} else {
 				m.homeFocus = homeFocusNone
 			}
@@ -1311,8 +1321,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "/":
 		if m.stage == stageSources {
-			m.stage, m.cursor = stageDiscoverSources, 0
-			return m, nil
+			if m.homeType == "anime" {
+				return m, m.beginHomeFilter()
+			}
 		}
 		if m.stage == stageAvailableExtensions {
 			m.stage = stageExtensionSearch
@@ -1321,6 +1332,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		}
 	case "c":
+		if m.stage == stageSources && m.homeType == "anime" && m.homeFilterActive() {
+			m.clearHomeFilter()
+			return m, nil
+		}
 		if m.stage == stageAvailableExtensions {
 			m.extensionQuery, m.extensionLanguage, m.cursor = "", "", 0
 			return m, nil
@@ -1351,10 +1366,6 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.loadAniListLibrary(m.anilistToken, true, false))
-		}
-	case "w":
-		if m.stage == stageSources && m.homeType == "anime" && len(m.continueWatching) > 0 {
-			return m.playContinue(m.continueWatching[0])
 		}
 	case "x":
 		if m.stage == stageAniListLibrary {
@@ -1413,15 +1424,22 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-	case "p":
-		if m.stage == stageStreams {
-			return m.activate()
-		}
+	case "pgup":
+		m.movePage(-1)
+		return m, nil
+	case "pgdown":
+		m.movePage(1)
+		return m, nil
 	}
 	return m, nil
 }
 
 func (m Model) acceptsTextInput() bool {
+	if m.stage == stageSources && m.homeType == "anime" {
+		if active := m.activeHomeList(); active != nil && active.SettingFilter() {
+			return true
+		}
+	}
 	switch m.stage {
 	case stageSearch, stageRepositoryAdd, stageExtensionSearch, stageAniListToken,
 		stageAlternativeTitle, stageCloudflareCookie, stageCloudflareUserAgent:
@@ -1985,7 +2003,10 @@ func (m *Model) clearEpisodeResolution() {
 func (m Model) currentLength() int {
 	switch m.stage {
 	case stageSources:
-		return len(m.resumeWatchingList.Items()) + len(m.newEpisodesList.Items()) + len(m.continueWatchingList.Items())
+		if active := m.activeHomeList(); active != nil {
+			return len(active.VisibleItems())
+		}
+		return 0
 	case stageDiscoverSources:
 		return len(m.homeSources())
 	case stageResults:
@@ -2237,7 +2258,7 @@ func (m *Model) refreshNewEpisodes(now time.Time) {
 	for index, entry := range entries {
 		items[index] = newEpisodeListItem(entry)
 	}
-	_ = m.newEpisodesList.SetItems(items)
+	replaceHomeItems(&m.newEpisodesList, items)
 	m.resizeNewEpisodesList()
 	m.normalizeHomeFocus()
 }
@@ -2253,7 +2274,7 @@ func (m *Model) refreshContinueWatching() {
 	for index, entry := range entries {
 		items[index] = continueWatchingListItem{entry: entry}
 	}
-	_ = m.continueWatchingList.SetItems(items)
+	replaceHomeItems(&m.continueWatchingList, items)
 	m.resizeContinueWatchingList()
 	m.normalizeHomeFocus()
 }
@@ -2266,7 +2287,7 @@ func (m *Model) refreshResumeWatching() {
 		}
 		items = append(items, resumeWatchingListItem{entry: entry})
 	}
-	_ = m.resumeWatchingList.SetItems(items)
+	replaceHomeItems(&m.resumeWatchingList, items)
 	m.resizeResumeWatchingList()
 	m.normalizeHomeFocus()
 }
@@ -2276,13 +2297,7 @@ func (m *Model) normalizeHomeFocus() {
 		m.homeFocus = homeFocusNone
 		return
 	}
-	if m.homeFocus == homeFocusResumeWatching && len(m.resumeWatchingList.Items()) > 0 {
-		return
-	}
-	if m.homeFocus == homeFocusNewEpisodes && len(m.newEpisodesList.Items()) > 0 {
-		return
-	}
-	if m.homeFocus == homeFocusContinueWatching && len(m.continueWatchingList.Items()) > 0 {
+	if m.homeFocus == homeFocusResumeWatching || m.homeFocus == homeFocusNewEpisodes || m.homeFocus == homeFocusContinueWatching {
 		return
 	}
 	if len(m.resumeWatchingList.Items()) > 0 {
@@ -2297,19 +2312,15 @@ func (m *Model) normalizeHomeFocus() {
 }
 
 func (m *Model) resizeNewEpisodesList() {
-	itemCount := min(4, len(m.newEpisodesList.Items()))
-	height := itemCount * 3
-	m.newEpisodesList.SetSize(max(32, m.width-8), max(3, height))
+	m.newEpisodesList.SetSize(max(32, m.width-8), max(3, m.height-14))
 }
 
 func (m *Model) resizeContinueWatchingList() {
-	itemCount := min(4, len(m.continueWatchingList.Items()))
-	m.continueWatchingList.SetSize(max(32, m.width-8), max(3, itemCount*3))
+	m.continueWatchingList.SetSize(max(32, m.width-8), max(3, m.height-14))
 }
 
 func (m *Model) resizeResumeWatchingList() {
-	itemCount := min(3, len(m.resumeWatchingList.Items()))
-	m.resumeWatchingList.SetSize(max(32, m.width-8), max(3, itemCount*3))
+	m.resumeWatchingList.SetSize(max(32, m.width-8), max(3, m.height-14))
 }
 
 func newEpisodeDelegate(focused, loading bool, spinnerView string) list.DefaultDelegate {

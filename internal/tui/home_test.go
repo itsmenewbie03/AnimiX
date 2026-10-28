@@ -116,7 +116,8 @@ func TestFeedbackUsesNotificationsInsteadOfInlineBanners(t *testing.T) {
 		t.Fatalf("error notification missing:\n%s", view)
 	}
 
-	updated, command = model.Update(browserOpenedMsg{})
+	model.status = "status feedback"
+	updated, command = model.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	model = updated.(Model)
 	if command == nil || model.status != "" {
 		t.Fatalf("status was not migrated to a notification: command=%v status=%q", command, model.status)

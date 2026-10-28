@@ -563,7 +563,6 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setEpisodeItems()
 			m.cursor = episodeCursor(m.details.Episodes, nextEpisodeTargetWithLocal(*m.resolvingEpisode, m.localWatchedEpisodes()))
 			m.episodeList.Select(m.cursor)
-			m.status = fmt.Sprintf("Matched %s on %s", m.selectedMedia.DisplayTitle(), m.selectedSource.Name)
 			return m, nil
 		}
 		m.stage, m.cursor = stageDetails, 0
@@ -725,7 +724,6 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
 			m.stage, m.cursor = stageRepositories, 0
-			m.status = "Repository added"
 			return m, m.loadRepositories()
 		}
 		return m, nil
@@ -733,21 +731,18 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
 			m.cursor = 0
-			m.status = "Repository removed"
 			return m, m.loadRepositories()
 		}
 		return m, nil
 	case extensionInstalledMsg:
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
-			m.status = "Installed " + msg.path
 			return m, m.loadSources()
 		}
 		return m, nil
 	case extensionRemovedMsg:
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
-			m.status = "Removed " + msg.path
 			return m, m.loadSources()
 		}
 		return m, nil
@@ -787,7 +782,6 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.editingEntry = msg.entry
 			m.refreshNewEpisodes(time.Now())
 			m.refreshContinueWatching()
-			m.status = "AniList entry updated"
 			m.stage = stageAniListLibrary
 		}
 		return m, nil
@@ -851,18 +845,10 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshContinueWatching()
 			m.viewer = anilist.Viewer{}
 			m.stage, m.cursor = stageSources, 0
-			m.status = "Signed out of AniList"
 		}
 		return m, nil
 	case browserOpenedMsg:
 		m.err = msg.err
-		if msg.err == nil {
-			if m.stage == stageCloudflareCookie || m.stage == stageCloudflareUserAgent {
-				m.status = "Source domain opened in your browser"
-			} else {
-				m.status = "AniList authorization opened in your browser"
-			}
-		}
 		return m, nil
 	case cloudflareAppliedMsg:
 		m.loading, m.err = false, msg.err

@@ -361,6 +361,9 @@ func TestHomeFilterAndVimListJumps(t *testing.T) {
 	if !model.continueWatchingList.SettingFilter() {
 		t.Fatal("/ did not open the active feed filter")
 	}
+	if view := ansi.Strip(model.sourcesView()); strings.Count(view, "Filter:") != 1 {
+		t.Fatalf("active filter prompt count = %d, want 1:\n%s", strings.Count(view, "Filter:"), view)
+	}
 	model.continueWatchingList.SetFilterText("a")
 	ordered := model.continueWatchingList.VisibleItems()
 	if len(ordered) != 3 || ordered[0].(continueWatchingListItem).entry.Title != "Alpha" || ordered[2].(continueWatchingListItem).entry.Title != "Gamma" {

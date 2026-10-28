@@ -275,7 +275,7 @@ func (m Model) sourcesView() string {
 		active := m.activeHomeList()
 		if active != nil {
 			if active.SettingFilter() {
-				output.WriteString("Filter: " + active.FilterInput.View() + "\n\n")
+				output.WriteString(active.FilterInput.View() + "\n\n")
 			} else if active.FilterValue() != "" {
 				output.WriteString(helpStyle.Render("Filter: "+active.FilterValue()+"  •  / edit  •  c clear") + "\n\n")
 			}

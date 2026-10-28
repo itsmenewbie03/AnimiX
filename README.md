@@ -103,7 +103,7 @@ go run .
 If your extensions live somewhere else:
 
 ```sh
-go run . --extensions /path/to/AnymeX/Extensions/Aniyomi
+go run . --extensions /path/to/AnimiX/Extensions/Aniyomi
 ```
 
 Testing unreleased runtime bridge changes? Pass your rebuilt JAR explicitly —

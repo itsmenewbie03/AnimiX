@@ -79,7 +79,7 @@ func MPV(executable string, video catalog.Video) *exec.Cmd {
 }
 
 func MPVSession(executable string, video catalog.Video, start float64, chapters ...Chapter) (*Session, error) {
-	directory, err := os.MkdirTemp("", "anymex-mpv-")
+	directory, err := os.MkdirTemp("", "animix-mpv-")
 	if err != nil {
 		return nil, fmt.Errorf("create mpv progress directory: %w", err)
 	}

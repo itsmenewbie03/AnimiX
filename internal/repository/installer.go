@@ -45,7 +45,7 @@ func (i *Installer) Install(ctx context.Context, extension Extension, destinatio
 		return "", fmt.Errorf("download extension: HTTP %s", response.Status)
 	}
 
-	temporary, err := os.CreateTemp("", "anymex-extension-*.apk")
+	temporary, err := os.CreateTemp("", "animix-extension-*.apk")
 	if err != nil {
 		return "", err
 	}

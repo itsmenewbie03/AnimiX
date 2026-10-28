@@ -2,10 +2,20 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestDefaultExtensionDirectoryUsesAnimiXDataDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := filepath.Join(home, "Documents", "AnimiX", "Extensions", "Aniyomi")
+	if got := defaultExtensionDirectory(); got != want {
+		t.Fatalf("defaultExtensionDirectory() = %q, want %q", got, want)
+	}
+}
 
 func TestNormalizeInstallArgs(t *testing.T) {
 	t.Parallel()

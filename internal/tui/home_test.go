@@ -1369,7 +1369,7 @@ func TestLoadingSpinnerDecoratesSelectedResultWithoutAddingStatusRows(t *testing
 	idleRow := ansi.Strip(idle.mediaResultsView())
 	loadingRow := ansi.Strip(model.mediaResultsView())
 	view := model.View()
-	if strings.Contains(view, "Working with the AnymeX") {
+	if strings.Contains(view, "Working with AnimiX") {
 		t.Fatalf("loading view added a top status row:\n%s", view)
 	}
 	if !strings.Contains(loadingRow, ansi.Strip(model.spinner.View())+" One Piece") {
@@ -1432,7 +1432,7 @@ func TestLoadingSpinnerDecoratesSelectedHomeItem(t *testing.T) {
 	if strings.Contains(loadingView, "[0m") {
 		t.Fatalf("spinner leaked an ANSI reset sequence:\n%s", loadingView)
 	}
-	if strings.Contains(view, "Working with the AnymeX") {
+	if strings.Contains(view, "Working with AnimiX") {
 		t.Fatalf("loading view added a top status row:\n%s", view)
 	}
 }

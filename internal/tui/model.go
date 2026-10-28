@@ -348,11 +348,12 @@ type (
 )
 
 var (
-	accent     = lipgloss.Color("#9B87F5")
-	dim        = lipgloss.Color("#777777")
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	selected   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(accent).Padding(0, 1)
-	helpStyle  = lipgloss.NewStyle().Foreground(dim)
+	accent            = lipgloss.Color("#9B87F5")
+	dim               = lipgloss.Color("#777777")
+	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	selected          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(accent).Padding(0, 1)
+	helpStyle         = lipgloss.NewStyle().Foreground(dim)
+	filterPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
 )
 
 func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, playerExecutable string, options ...Option) Model {
@@ -406,6 +407,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	newEpisodes.SetShowPagination(false)
 	newEpisodes.DisableQuitKeybindings()
 	newEpisodes.Styles.Title = titleStyle
+	newEpisodes.FilterInput.PromptStyle = filterPromptStyle
 	continueWatching := list.New(nil, newEpisodeDelegate(false, false, ""), 60, 8)
 	continueWatching.SetShowTitle(false)
 	continueWatching.SetShowStatusBar(false)
@@ -415,6 +417,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	continueWatching.SetShowHelp(false)
 	continueWatching.SetShowPagination(false)
 	continueWatching.DisableQuitKeybindings()
+	continueWatching.FilterInput.PromptStyle = filterPromptStyle
 	resumeWatching := list.New(nil, newEpisodeDelegate(false, false, ""), 60, 5)
 	resumeWatching.SetShowTitle(false)
 	resumeWatching.SetShowStatusBar(false)
@@ -424,6 +427,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	resumeWatching.SetShowHelp(false)
 	resumeWatching.SetShowPagination(false)
 	resumeWatching.DisableQuitKeybindings()
+	resumeWatching.FilterInput.PromptStyle = filterPromptStyle
 	episodes := list.New(nil, episodeDelegate{loading: false}, 60, 12)
 	episodes.SetShowTitle(false)
 	episodes.SetShowStatusBar(false)

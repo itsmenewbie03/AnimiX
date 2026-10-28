@@ -337,6 +337,9 @@ func TestHomeFilterAndVimListJumps(t *testing.T) {
 	model.loading = false
 	model.width, model.height = 100, 40
 	model.homeFocus = homeFocusContinueWatching
+	if got := fmt.Sprint(model.continueWatchingList.FilterInput.PromptStyle.GetForeground()); got != "#f9e2af" {
+		t.Fatalf("filter prompt color = %q, want #f9e2af", got)
+	}
 	replaceHomeItems(&model.continueWatchingList, []list.Item{
 		continueWatchingListItem{entry: anilist.Entry{Title: "Alpha"}},
 		continueWatchingListItem{entry: anilist.Entry{Title: "Beta"}},

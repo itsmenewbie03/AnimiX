@@ -12,7 +12,8 @@ import (
 func TestMPVArguments(t *testing.T) {
 	t.Parallel()
 	command := MPV("mpv", catalog.Video{
-		URL: "https://cdn.example/video.m3u8",
+		Title: "BOFURI Season 2 — Maxing Defense and Tentacles. (EP 5)",
+		URL:   "https://cdn.example/video.m3u8",
 		Headers: map[string]string{
 			"User-Agent": "AnymeX",
 			"Referer":    "https://example.com/",
@@ -23,6 +24,8 @@ func TestMPVArguments(t *testing.T) {
 		"mpv",
 		"--force-window=yes",
 		"--no-save-position-on-quit",
+		"--title=BOFURI Season 2 — Maxing Defense and Tentacles. (EP 5)",
+		"--force-media-title=BOFURI Season 2 — Maxing Defense and Tentacles. (EP 5)",
 		"--network-timeout=30",
 		"--cache=yes",
 		"--cache-secs=120",

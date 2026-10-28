@@ -95,6 +95,32 @@ func episodeSubtitle(episode catalog.Episode, seriesTitle string) string {
 	return strings.TrimSpace(firstNonEmpty(episode.Summary, episode.Description, episode.Memo, seriesTitle, episodePrimaryLabel(episode)))
 }
 
+func playbackMediaTitle(seriesTitle string, episode catalog.Episode) string {
+	seriesTitle = strings.TrimSpace(seriesTitle)
+	number := normalizedEpisodeNumber(episode.Number())
+	episodeTitle := strings.TrimSpace(episode.Title)
+	if strings.EqualFold(episodeTitle, episodePrimaryLabel(episode)) {
+		episodeTitle = ""
+	}
+	if episodeTitle != "" {
+		label := episodeTitle
+		if number != "" {
+			label += " (EP " + number + ")"
+		}
+		if seriesTitle == "" {
+			return label
+		}
+		return seriesTitle + " — " + label
+	}
+	if number != "" {
+		if seriesTitle == "" {
+			return "Episode " + number
+		}
+		return seriesTitle + " — Episode " + number
+	}
+	return firstNonEmpty(seriesTitle, strings.TrimSpace(episode.Name))
+}
+
 func (m *Model) setEpisodeItems() {
 	localWatched := make(map[string]bool)
 	for _, number := range m.localWatchedEpisodes() {

@@ -223,6 +223,15 @@ func (m Model) View() string {
 		body.WriteString(titleStyle.Render("Update AnimiX") + "\n\n")
 		body.WriteString(m.updateProgressLabel() + "\n\n")
 		body.WriteString(m.updateProgress.ViewAs(m.updatePercent))
+	case stageAutoPlayPrompt:
+		if m.autoPlay.phase == autoPlayLoadingDetails {
+			body.WriteString(m.spinner.View() + " Finding the next episode…")
+		} else {
+			body.WriteString(titleStyle.Render("Play next episode?") + "\n\n")
+			body.WriteString(episodePrimaryLabel(m.autoPlay.next) + "\n\n")
+			body.WriteString(m.listView(autoPlayChoices))
+			body.WriteString("\n" + helpStyle.Render("↑/↓ or j/k move • enter choose • esc no • q quit"))
+		}
 	}
 	if m.availableUpdate.Version != "" && m.stage != stageUpdatePrompt {
 		body.WriteString("\n\n" + helpStyle.Render("u install AnimiX "+m.availableUpdate.Version))
@@ -422,6 +431,9 @@ func (m Model) listHelp(action string) string {
 }
 
 func (m Model) breadcrumb() string {
+	if m.stage == stageAutoPlayPrompt {
+		return "Home › Playback › Next episode"
+	}
 	if m.stage == stageDiscoverSources {
 		return "Home › Discover"
 	}

@@ -54,6 +54,7 @@ const (
 	stageCloudflareCookie
 	stageCloudflareUserAgent
 	stageUpdatePrompt
+	stageAutoPlayPrompt
 )
 
 type cloudflareOperation uint8
@@ -138,6 +139,8 @@ type Model struct {
 	rememberStream       bool
 	playbackReturnHome   bool
 	pendingPlayback      *appconfig.ContinueEntry
+	autoPlayNextEpisode  *bool
+	autoPlay             autoPlayState
 	malID                int
 	updateService        UpdateService
 	currentVersion       string
@@ -160,6 +163,17 @@ func WithUpdateCheck(service UpdateService, currentVersion string) Option {
 	return func(model *Model) {
 		model.updateService = service
 		model.currentVersion = currentVersion
+	}
+}
+
+func WithAutoPlayNextEpisode(setting *bool) Option {
+	return func(model *Model) {
+		if setting == nil {
+			model.autoPlayNextEpisode = nil
+			return
+		}
+		enabled := *setting
+		model.autoPlayNextEpisode = &enabled
 	}
 }
 
@@ -516,10 +530,17 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflareDetails)
 			}
+			if m.autoPlay.phase == autoPlayLoadingDetails {
+				m.autoPlay = autoPlayState{}
+				m.finishPlaybackNavigation()
+			}
 			return m, nil
 		}
 		m.details = msg.media
 		m.malID = msg.malID
+		if m.autoPlay.phase == autoPlayLoadingDetails {
+			return m.resolveAutoPlayNext()
+		}
 		if m.resolvingEpisode != nil {
 			mapping := appconfig.MediaMapping{
 				MediaID: m.resolvingEpisode.MediaID, SourceID: m.selectedSource.ID,
@@ -546,9 +567,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflareVideos)
 			}
+			if m.autoPlay.phase == autoPlayLoadingStreams {
+				m.autoPlay = autoPlayState{}
+				m.finishPlaybackNavigation()
+			}
 			return m, nil
 		}
 		m.videos = msg.items
+		if m.autoPlay.phase == autoPlayLoadingStreams {
+			return m.handleAutoPlayVideos(msg.items)
+		}
 		if m.pendingPlayback != nil {
 			entry := *m.pendingPlayback
 			m.pendingPlayback = nil
@@ -627,6 +655,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m.beginCloudflareRecovery(cloudflarePlayback)
 			case progress.Reason == "quit" && percentage < watchedThreshold*100:
 				m.status = fmt.Sprintf("Playback stopped at %.0f%%", percentage)
+			case shouldOfferAutoPlay(msg.err, progress) && m.selectedSource.IsAnime() &&
+				(m.autoPlayNextEpisode == nil || *m.autoPlayNextEpisode):
+				syncCommand = m.syncAniListPlayback(entry, progress)
+				updated, autoPlayCommand := m.beginAutoPlay(entry)
+				return updated, tea.Batch(syncCommand, autoPlayCommand)
 			default:
 				m.status = ""
 				notificationCommand = m.notifier.Notify(notification.Notice{
@@ -645,12 +678,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "The local stream proxy failed — refresh Cloudflare credentials to resume"
 			return m.beginCloudflareRecovery(cloudflarePlayback)
 		}
-		if m.playbackReturnHome {
-			m.stage = stageSources
-			m.homeFocus = homeFocusResumeWatching
-			m.cursor = 0
-			m.playbackReturnHome = false
-		}
+		m.finishPlaybackNavigation()
 		return m, tea.Batch(syncCommand, notificationCommand)
 	case repositoriesMsg:
 		if msg.err != nil {
@@ -767,13 +795,31 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		msg.playback.AniListProgress = msg.entry.Progress
-		msg.playback.AniListStatus = msg.entry.Status
-		if err := m.configStore.SaveContinue(msg.playback); err != nil {
+		// Playback can already have advanced to the next episode while this
+		// tracker request was in flight. Merge the tracker result into the newest
+		// record for the media instead of restoring the completed episode.
+		playback := msg.playback
+		for _, current := range m.continueWatching {
+			if current.SourceID == msg.playback.SourceID && current.MediaURL == msg.playback.MediaURL {
+				playback = current
+				break
+			}
+		}
+		if playback.AniListEntryID == 0 {
+			playback.AniListEntryID = msg.playback.AniListEntryID
+		}
+		if playback.AniListMediaID == 0 {
+			playback.AniListMediaID = msg.playback.AniListMediaID
+		}
+		playback.AniListProgress = msg.entry.Progress
+		playback.AniListStatus = msg.entry.Status
+		playback.AniListTotal = msg.entry.Total
+		playback.AniListMediaStatus = msg.entry.MediaStatus
+		if err := m.configStore.SaveContinue(playback); err != nil {
 			m.err = fmt.Errorf("save AniList playback progress: %w", err)
 			return m, nil
 		}
-		m.continueWatching = prependContinue(m.continueWatching, msg.playback)
+		m.continueWatching = prependContinue(m.continueWatching, playback)
 		if m.resolvingEpisode != nil && m.resolvingEpisode.ID == msg.entry.ID {
 			updated := *m.resolvingEpisode
 			updated.Progress = msg.entry.Progress
@@ -819,7 +865,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.sourceCredentials = prependSourceCredential(m.sourceCredentials, msg.credential)
 		m.status = "Cloudflare credentials applied; retrying request"
 		m.stage = m.cloudflareReturn
-		return m, m.retryCloudflareOperation()
+		retry := m.retryCloudflareOperation()
+		m.loading = retry != nil
+		return m, retry
 	case updateCheckedMsg:
 		// Update checks are best-effort and should never block startup.
 		if msg.err == nil && msg.release.Version != "" {
@@ -889,6 +937,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.loading {
 		return m, nil
+	}
+	if m.stage == stageAutoPlayPrompt && m.autoPlay.phase == autoPlayPrompting {
+		return m.handleAutoPlayPromptKey(key)
 	}
 	if strings.ToLower(key.String()) == "u" && m.availableUpdate.Version != "" && !m.acceptsTextInput() {
 		m.updateReturn = m.stage
@@ -1480,7 +1531,10 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	video := m.videos[m.cursor]
-	m.playbackReturnHome = false
+	continuingAutoPlay := m.autoPlay.phase == autoPlayLoadingStreams || m.autoPlay.phase == autoPlayChoosingStream
+	if !continuingAutoPlay {
+		m.playbackReturnHome = false
+	}
 	entry := appconfig.ContinueEntry{
 		Title:         firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle()),
 		SourceID:      m.selectedSource.ID,
@@ -1519,10 +1573,15 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 	}
 	m.continueWatching = prependContinue(m.continueWatching, entry)
 	m.refreshResumeWatching()
+	m.status = ""
+	if continuingAutoPlay {
+		m.autoPlay = autoPlayState{}
+	}
 	return m.startPlayer(video, entry)
 }
 
 func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
+	m.autoPlay = autoPlayState{}
 	m.playbackReturnHome = true
 	if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
 		entry.Position = 0
@@ -1539,6 +1598,9 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 
 func (m Model) resumePlayback(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
 	m.playbackReturnHome = true
+	// Resume Watching does not pass through the details screen. Clear any
+	// previously viewed title so autoplay cannot use a stale episode catalog.
+	m.details = catalog.Media{}
 	source, ok := m.sourceByID(entry.SourceID)
 	if !ok {
 		m.err = fmt.Errorf("source %s is not loaded; cannot refresh the saved stream", entry.SourceName)
@@ -1612,6 +1674,13 @@ func isLocalProxyURL(value string) bool {
 }
 
 func (m Model) startPlayer(video catalog.Video, entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
+	seriesTitle := entry.Title
+	if m.resolvingEpisode != nil &&
+		((entry.AniListEntryID != 0 && m.resolvingEpisode.ID == entry.AniListEntryID) ||
+			(entry.AniListMediaID != 0 && m.resolvingEpisode.MediaID == entry.AniListMediaID)) {
+		seriesTitle = firstNonEmpty(m.resolvingEpisode.Title, seriesTitle)
+	}
+	video.Title = playbackMediaTitle(seriesTitle, m.selectedEpisode)
 	session, err := player.MPVSession(m.player, video, entry.Position, m.skipChapters(entry.Duration)...)
 	if err != nil {
 		m.err = err
@@ -1836,7 +1905,14 @@ func (m *Model) back() {
 		} else {
 			m.stage = stageDetails
 		}
-	case stageStreams, stagePages:
+	case stageStreams:
+		if m.autoPlay.phase == autoPlayChoosingStream {
+			m.autoPlay = autoPlayState{}
+			m.finishPlaybackNavigation()
+		} else {
+			m.stage = stageEpisodes
+		}
+	case stagePages:
 		m.stage = stageEpisodes
 	case stageRepositories:
 		m.stage = stageSources
@@ -2606,7 +2682,6 @@ func (m Model) applyCloudflareCredentials() tea.Cmd {
 }
 
 func (m Model) retryCloudflareOperation() tea.Cmd {
-	m.loading = true
 	switch m.cloudflareOperation {
 	case cloudflareSearch:
 		return tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQueryOrSearch()))

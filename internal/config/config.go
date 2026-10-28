@@ -17,14 +17,15 @@ type Repository struct {
 }
 
 type Config struct {
-	Repositories      []Repository       `json:"repositories" toml:"repositories"`
-	AniListToken      string             `json:"anilistToken,omitempty" toml:"anilist_token,omitempty"`
-	ContinueWatching  []ContinueEntry    `json:"continueWatching,omitempty" toml:"continue_watching,omitempty"`
-	ActiveSources     map[string]string  `json:"activeSources,omitempty" toml:"active_sources,omitempty"`
-	MediaMappings     []MediaMapping     `json:"mediaMappings,omitempty" toml:"media_mappings,omitempty"`
-	SourceCredentials []SourceCredential `json:"sourceCredentials,omitempty" toml:"source_credentials,omitempty"`
-	StreamPreferences []StreamPreference `json:"streamPreferences,omitempty" toml:"stream_preferences,omitempty"`
-	CheckUpdates      *bool              `json:"checkUpdates,omitempty" toml:"check_updates,omitempty"`
+	Repositories        []Repository       `json:"repositories" toml:"repositories"`
+	AniListToken        string             `json:"anilistToken,omitempty" toml:"anilist_token,omitempty"`
+	ContinueWatching    []ContinueEntry    `json:"continueWatching,omitempty" toml:"continue_watching,omitempty"`
+	ActiveSources       map[string]string  `json:"activeSources,omitempty" toml:"active_sources,omitempty"`
+	MediaMappings       []MediaMapping     `json:"mediaMappings,omitempty" toml:"media_mappings,omitempty"`
+	SourceCredentials   []SourceCredential `json:"sourceCredentials,omitempty" toml:"source_credentials,omitempty"`
+	StreamPreferences   []StreamPreference `json:"streamPreferences,omitempty" toml:"stream_preferences,omitempty"`
+	CheckUpdates        *bool              `json:"checkUpdates,omitempty" toml:"check_updates,omitempty"`
+	AutoPlayNextEpisode *bool              `json:"autoPlayNextEpisode,omitempty" toml:"auto_play_next_episode,omitempty"`
 }
 
 func (c Config) UpdatesEnabled() bool { return c.CheckUpdates == nil || *c.CheckUpdates }
@@ -78,6 +79,15 @@ func (s *Store) SetAniListToken(token string) error {
 		return err
 	}
 	config.AniListToken = token
+	return s.Save(config)
+}
+
+func (s *Store) SetAutoPlayNextEpisode(enabled bool) error {
+	config, err := s.Load()
+	if err != nil {
+		return err
+	}
+	config.AutoPlayNextEpisode = &enabled
 	return s.Save(config)
 }
 
@@ -212,7 +222,8 @@ func NewStore(path string) *Store {
 }
 
 type settings struct {
-	CheckUpdates *bool `toml:"check_updates,omitempty"`
+	CheckUpdates        *bool `toml:"check_updates,omitempty"`
+	AutoPlayNextEpisode *bool `toml:"auto_play_next_episode,omitempty"`
 }
 
 type state struct {
@@ -236,6 +247,7 @@ func (s *Store) Load() (Config, error) {
 			return Config{}, fmt.Errorf("decode settings %s: %w", s.path, err)
 		}
 		result.CheckUpdates = values.CheckUpdates
+		result.AutoPlayNextEpisode = values.AutoPlayNextEpisode
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
 	}
@@ -267,7 +279,9 @@ func (s *Store) writeSettings(config Config) error {
 	if err != nil {
 		return err
 	}
-	encodeErr := toml.NewEncoder(file).Encode(settings{CheckUpdates: config.CheckUpdates})
+	encodeErr := toml.NewEncoder(file).Encode(settings{
+		CheckUpdates: config.CheckUpdates, AutoPlayNextEpisode: config.AutoPlayNextEpisode,
+	})
 	closeErr := file.Close()
 	if encodeErr != nil {
 		return encodeErr

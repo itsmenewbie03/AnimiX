@@ -117,7 +117,9 @@ func (c *Client) EpisodeMetadata(ctx context.Context, mediaID int) (EpisodeCatal
 	}
 	for number, episode := range payload.Episodes {
 		result.Episodes[number] = EpisodeMetadata{
-			Title:       firstNonEmpty(episode.Title["en"], episode.Title["x-jat"], episode.Title["ja"]),
+			// Use only explicitly English episode titles. Missing titles produce a
+			// neutral "Episode N" label instead of a mixed-language media title.
+			Title:       strings.TrimSpace(episode.Title["en"]),
 			Description: firstNonEmpty(episode.Overview, episode.Summary), Image: episode.Image,
 		}
 	}

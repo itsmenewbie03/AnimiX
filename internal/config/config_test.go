@@ -20,6 +20,48 @@ func TestDefaultUpdateChecksEnabledUnlessDisabled(t *testing.T) {
 	}
 }
 
+func TestAutoPlayNextEpisodeUsesUnsetAskState(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	store := NewStore(path)
+
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.AutoPlayNextEpisode != nil {
+		t.Fatalf("default auto-play setting = %v, want unset", *config.AutoPlayNextEpisode)
+	}
+
+	for _, enabled := range []bool{true, false} {
+		if err := store.SetAutoPlayNextEpisode(enabled); err != nil {
+			t.Fatal(err)
+		}
+		config, err = store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.AutoPlayNextEpisode == nil || *config.AutoPlayNextEpisode != enabled {
+			t.Fatalf("saved auto-play setting = %v, want %t", config.AutoPlayNextEpisode, enabled)
+		}
+	}
+
+	settingsData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(settingsData), "auto_play_next_episode = false") {
+		t.Fatalf("config.toml missing auto-play setting: %s", settingsData)
+	}
+	stateData, err := os.ReadFile(filepath.Join(filepath.Dir(path), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stateData), "autoPlayNextEpisode") {
+		t.Fatalf("state.json contains user setting: %s", stateData)
+	}
+}
+
 func TestLoadMigratesLegacyJSONAndKeepsBackup(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()

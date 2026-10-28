@@ -123,7 +123,7 @@ func main() {
 		return
 	}
 
-	options := []tui.Option{}
+	options := []tui.Option{tui.WithAutoPlayNextEpisode(config.AutoPlayNextEpisode)}
 	if config.UpdatesEnabled() {
 		options = append(options, tui.WithUpdateCheck(appupdate.NewClient(), version))
 	}

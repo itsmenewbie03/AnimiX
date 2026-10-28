@@ -17,14 +17,6 @@ func (m Model) View() string {
 	body.WriteString("\n")
 	body.WriteString(helpStyle.Render(m.breadcrumb()))
 	body.WriteString("\n\n")
-	if m.err != nil {
-		body.WriteString(errorStyle.Render(m.err.Error()))
-		body.WriteString("\n\n")
-	}
-	if m.status != "" {
-		body.WriteString(helpStyle.Render(m.status))
-		body.WriteString("\n\n")
-	}
 
 	switch m.stage {
 	case stageSources:

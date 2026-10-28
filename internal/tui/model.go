@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -265,8 +266,10 @@ type detailsMsg struct {
 }
 
 type videosMsg struct {
-	items []catalog.Video
-	err   error
+	items           []catalog.Video
+	episodeMetadata *anilist.EpisodeMetadata
+	malID           int
+	err             error
 }
 
 type pagesMsg struct {
@@ -591,6 +594,19 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case videosMsg:
 		m.loading, m.err = false, msg.err
+		if msg.episodeMetadata != nil {
+			m.selectedEpisode.Title = msg.episodeMetadata.Title
+			m.selectedEpisode.Description = msg.episodeMetadata.Description
+			if m.selectedEpisode.Thumbnail == "" {
+				m.selectedEpisode.Thumbnail = msg.episodeMetadata.Image
+			}
+		}
+		if msg.malID != 0 {
+			m.malID = msg.malID
+			if m.pendingPlayback != nil && m.pendingPlayback.MALID == 0 {
+				m.pendingPlayback.MALID = msg.malID
+			}
+		}
 		if msg.err != nil {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflareVideos)
@@ -2788,8 +2804,43 @@ func (m Model) loadVideos() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
 		defer cancel()
-		items, err := m.service.Videos(ctx, m.selectedSource, m.selectedEpisode)
-		return videosMsg{items: items, err: err}
+		var (
+			items           []catalog.Video
+			videoErr        error
+			episodeMetadata *anilist.EpisodeMetadata
+			malID           int
+			wait            sync.WaitGroup
+		)
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			items, videoErr = m.service.Videos(ctx, m.selectedSource, m.selectedEpisode)
+		}()
+
+		mediaID := 0
+		if m.pendingPlayback != nil {
+			mediaID = m.pendingPlayback.AniListMediaID
+		}
+		if mediaID == 0 && m.resolvingEpisode != nil {
+			mediaID = m.resolvingEpisode.MediaID
+		}
+		if m.pendingPlayback != nil && mediaID != 0 {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				metadata, err := m.anilistClient.EpisodeMetadata(ctx, mediaID)
+				if err != nil {
+					return
+				}
+				malID = metadata.MALID
+				if episode, ok := metadata.Episodes[normalizedEpisodeNumber(m.selectedEpisode.Number())]; ok {
+					episodeCopy := episode
+					episodeMetadata = &episodeCopy
+				}
+			}()
+		}
+		wait.Wait()
+		return videosMsg{items: items, episodeMetadata: episodeMetadata, malID: malID, err: videoErr}
 	}
 }
 

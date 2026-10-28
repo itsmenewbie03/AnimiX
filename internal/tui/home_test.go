@@ -1324,6 +1324,33 @@ func TestPlaybackMediaTitle(t *testing.T) {
 	}
 }
 
+func TestResumeMetadataEnrichesPlaybackTitleBeforeLoadingVideos(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	entry := appconfig.ContinueEntry{AniListMediaID: 42, EpisodeNumber: "5", Title: "BOFURI"}
+	model.pendingPlayback = &entry
+	model.selectedEpisode = catalog.Episode{EpisodeNumber: "5", Name: "Episode 5"}
+
+	updated, command := model.Update(videosMsg{
+		items:           []catalog.Video{{URL: "https://example.test/video.m3u8"}},
+		episodeMetadata: &anilist.EpisodeMetadata{Title: "Defense and Christmas"},
+		malID:           123,
+	})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("resume metadata did not continue to video loading")
+	}
+	if model.selectedEpisode.Title != "Defense and Christmas" {
+		t.Fatalf("resume episode title = %q", model.selectedEpisode.Title)
+	}
+	if model.malID != 123 {
+		t.Fatalf("resume MAL ID = %d, want 123", model.malID)
+	}
+	if got := playbackMediaTitle(entry.Title, model.selectedEpisode); got != "BOFURI — Defense and Christmas (EP 5)" {
+		t.Fatalf("resume playback title = %q", got)
+	}
+}
+
 func TestSavedStreamPreferenceAutoPlaysForSameMedia(t *testing.T) {
 	t.Parallel()
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))

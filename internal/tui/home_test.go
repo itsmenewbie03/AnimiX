@@ -124,6 +124,40 @@ func TestFeedbackUsesNotificationsInsteadOfInlineBanners(t *testing.T) {
 	}
 }
 
+func TestDisruptiveNavigationActionsStillNotify(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		stage stage
+		msg   tea.Msg
+		want  string
+	}{
+		{name: "AniList browser", stage: stageAniListToken, msg: browserOpenedMsg{}, want: "AniList authorization opened in your browser"},
+		{name: "source browser", stage: stageCloudflareCookie, msg: browserOpenedMsg{}, want: "Source domain opened in your browser"},
+		{name: "AniList logout", stage: stageAniListLibrary, msg: aniListLogoutMsg{}, want: "Signed out of AniList"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			model := New(nil, nil, "", "mpv")
+			model.loading = false
+			model.width, model.height = 100, 40
+			model.stage = test.stage
+
+			raw, _ := model.update(test.msg)
+			if status := raw.(Model).status; status != test.want {
+				t.Fatalf("status = %q, want %q", status, test.want)
+			}
+			updated, command := model.Update(test.msg)
+			model = updated.(Model)
+			if command == nil || model.status != "" {
+				t.Fatalf("feedback was not converted to a notification: command=%v status=%q", command, model.status)
+			}
+		})
+	}
+}
+
 func TestManualMatchResultsUseSingleRowsWithSelectionIndicator(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")

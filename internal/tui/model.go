@@ -883,10 +883,18 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshContinueWatching()
 			m.viewer = anilist.Viewer{}
 			m.stage, m.cursor = stageSources, 0
+			m.status = "Signed out of AniList"
 		}
 		return m, nil
 	case browserOpenedMsg:
 		m.err = msg.err
+		if msg.err == nil {
+			if m.stage == stageCloudflareCookie || m.stage == stageCloudflareUserAgent {
+				m.status = "Source domain opened in your browser"
+			} else {
+				m.status = "AniList authorization opened in your browser"
+			}
+		}
 		return m, nil
 	case cloudflareAppliedMsg:
 		m.loading, m.err = false, msg.err

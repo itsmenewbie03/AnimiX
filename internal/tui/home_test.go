@@ -85,6 +85,44 @@ func TestUpdateBindingDoesNotStealTextInput(t *testing.T) {
 	}
 }
 
+func TestFeedbackUsesNotificationsInsteadOfInlineBanners(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.width, model.height = 100, 40
+	model.err = fmt.Errorf("legacy inline error")
+	model.status = "legacy inline status"
+	if view := ansi.Strip(model.View()); strings.Contains(view, "legacy inline") {
+		t.Fatalf("View rendered legacy inline feedback:\n%s", view)
+	}
+	model.err, model.status = nil, ""
+
+	updated, command := model.Update(sourcesMsg{err: fmt.Errorf("source load failed")})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("missing error notification command")
+	}
+	if model.err != nil || model.status != "" {
+		t.Fatalf("feedback remained inline: err=%v status=%q", model.err, model.status)
+	}
+	for range 8 {
+		if command == nil {
+			break
+		}
+		updated, command = model.Update(command())
+		model = updated.(Model)
+	}
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "source load failed") {
+		t.Fatalf("error notification missing:\n%s", view)
+	}
+
+	updated, command = model.Update(browserOpenedMsg{})
+	model = updated.(Model)
+	if command == nil || model.status != "" {
+		t.Fatalf("status was not migrated to a notification: command=%v status=%q", command, model.status)
+	}
+}
+
 func TestManualMatchResultsUseSingleRowsWithSelectionIndicator(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
@@ -201,8 +239,8 @@ func TestManualTitleOverrideStillWaitsForResultSelection(t *testing.T) {
 
 	updated, command := model.Update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Candidate"}}}})
 	model = updated.(Model)
-	if command != nil || model.stage != stageResults || model.loading || model.status != "Select the correct match from Provider" {
-		t.Fatalf("manual override state = %#v", model)
+	if command == nil || model.stage != stageResults || model.loading || model.status != "" {
+		t.Fatalf("manual override state = stage %d loading=%t status=%q command=%v", model.stage, model.loading, model.status, command)
 	}
 }
 
@@ -667,11 +705,11 @@ func TestAutoPlayStopsAtStreamPickerWhenNoSafeMatchExists(t *testing.T) {
 		{Quality: "720p", URL: "a"}, {Quality: "1080p", URL: "b"},
 	}})
 	model = updated.(Model)
-	if command != nil || model.stage != stageStreams || model.autoPlay.phase != autoPlayChoosingStream {
+	if command == nil || model.stage != stageStreams || model.autoPlay.phase != autoPlayChoosingStream {
 		t.Fatalf("stream fallback = stage %d phase %d command=%v", model.stage, model.autoPlay.phase, command)
 	}
-	if !strings.Contains(model.status, "Choose a stream") {
-		t.Fatalf("stream fallback status = %q", model.status)
+	if model.status != "" {
+		t.Fatalf("stream fallback left inline status = %q", model.status)
 	}
 
 	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
@@ -779,8 +817,8 @@ func TestEarlyPlaybackStopRequestsCloudflareCredentials(t *testing.T) {
 	if model.pendingPlayback == nil || model.pendingPlayback.Position != 61 {
 		t.Fatalf("pending playback = %#v, want position 61", model.pendingPlayback)
 	}
-	if !strings.Contains(model.status, "Cloudflare credentials") {
-		t.Fatalf("status = %q, want Cloudflare recovery message", model.status)
+	if model.status != "" {
+		t.Fatalf("recovery left inline status = %q", model.status)
 	}
 }
 
@@ -891,11 +929,11 @@ func TestUserQuitDoesNotResume(t *testing.T) {
 		progress: &player.Progress{Position: 61, Duration: 100, Reason: "quit"},
 	})
 	model = updated.(Model)
-	if command != nil {
-		t.Fatal("user quit unexpectedly resumed playback")
+	if command == nil {
+		t.Fatal("user quit did not produce a playback notification")
 	}
-	if !strings.Contains(model.status, "Playback stopped at") {
-		t.Fatalf("status = %q, want stopped message", model.status)
+	if model.status != "" || model.pendingPlayback != nil {
+		t.Fatalf("user quit left inline or pending playback state: status=%q pending=%#v", model.status, model.pendingPlayback)
 	}
 }
 

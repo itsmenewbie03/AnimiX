@@ -347,11 +347,9 @@ type (
 var (
 	accent     = lipgloss.Color("#9B87F5")
 	dim        = lipgloss.Color("#777777")
-	errorColor = lipgloss.Color("#FF6B6B")
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	selected   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(accent).Padding(0, 1)
 	helpStyle  = lipgloss.NewStyle().Foreground(dim)
-	errorStyle = lipgloss.NewStyle().Foreground(errorColor)
 )
 
 func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, playerExecutable string, options ...Option) Model {
@@ -466,6 +464,15 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	updated, command := m.update(message)
+	next, ok := updated.(Model)
+	if !ok {
+		return updated, command
+	}
+	return next.flushFeedback(command)
+}
+
+func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -884,7 +891,6 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = false
 			m.stage = m.updateReturn
 			if msg.err != nil {
-				m.err = msg.err
 				return m, m.notifier.Notify(notification.Notice{
 					Title: "Update failed", Message: msg.err.Error(), Level: notification.Error,
 				})
@@ -929,6 +935,34 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, m.notifier.Update(message)
+}
+
+func (m Model) flushFeedback(command tea.Cmd) (tea.Model, tea.Cmd) {
+	commands := make([]tea.Cmd, 0, 3)
+	if command != nil {
+		commands = append(commands, command)
+	}
+	if m.err != nil {
+		commands = append(commands, m.notifier.Notify(notification.Notice{
+			Message: m.err.Error(),
+			Level:   notification.Error,
+		}))
+		m.err = nil
+	}
+	if m.status != "" {
+		commands = append(commands, m.notifier.Notify(notification.Notice{
+			Message: m.status,
+			Level:   notification.Info,
+		}))
+		m.status = ""
+	}
+	if len(commands) == 0 {
+		return m, nil
+	}
+	if len(commands) == 1 {
+		return m, commands[0]
+	}
+	return m, tea.Batch(commands...)
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {

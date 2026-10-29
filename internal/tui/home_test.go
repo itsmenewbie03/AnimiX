@@ -366,6 +366,93 @@ func TestHomeFeedsRenderOneListAndPreserveOverlap(t *testing.T) {
 	}
 }
 
+func TestAniListProgressReconcilesResumeEntries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		episode    string
+		progress   int
+		sync       bool
+		linked     bool
+		wantResume bool
+		wantNotify bool
+	}{
+		{name: "whole episode completed", episode: "5", progress: 5, sync: true, linked: true, wantNotify: true},
+		{name: "fractional episode not yet completed", episode: "5.5", progress: 5, sync: true, linked: true, wantResume: true},
+		{name: "fractional episode completed", episode: "5.5", progress: 6, sync: true, linked: true, wantNotify: true},
+		{name: "later whole episode remains", episode: "6", progress: 5, sync: true, linked: true, wantResume: true},
+		{name: "reconciliation disabled", episode: "5", progress: 5, linked: true, wantResume: true},
+		{name: "unlinked entry remains", episode: "5", progress: 5, sync: true, wantResume: true},
+		{name: "unparseable episode remains", episode: "special", progress: 99, sync: true, linked: true, wantResume: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			model := New(nil, nil, "", "mpv", WithResumeAniListSync(test.sync))
+			model.loading = false
+			mediaID := 0
+			if test.linked {
+				mediaID = 42
+			}
+			model.continueWatching = []appconfig.ContinueEntry{{
+				Title: "BOFURI", AniListMediaID: mediaID, EpisodeNumber: test.episode,
+				Position: 5, Duration: 100,
+			}}
+			model.refreshResumeWatching()
+
+			updated, command := model.Update(aniListLibraryMsg{library: anilist.Library{Entries: []anilist.Entry{{
+				MediaID: 42, Type: "ANIME", Status: "CURRENT", Progress: test.progress,
+			}}}})
+			model = updated.(Model)
+			gotResume := len(model.resumeWatchingList.Items()) == 1
+			if gotResume != test.wantResume {
+				t.Fatalf("Resume visibility = %t, want %t", gotResume, test.wantResume)
+			}
+			if (command != nil) != test.wantNotify {
+				t.Fatalf("notification command present = %t, want %t", command != nil, test.wantNotify)
+			}
+		})
+	}
+}
+
+func TestAniListProgressReconciliationNotifiesOnlyOnce(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.continueWatching = []appconfig.ContinueEntry{{
+		Title: "BOFURI", SourceID: "source", MediaURL: "bofuri", AniListMediaID: 42,
+		EpisodeNumber: "5", Position: 5, Duration: 100,
+	}}
+	model.refreshResumeWatching()
+	message := aniListLibraryMsg{library: anilist.Library{Entries: []anilist.Entry{{
+		MediaID: 42, Type: "ANIME", Status: "CURRENT", Progress: 5,
+	}}}}
+
+	updated, firstCommand := model.Update(message)
+	model = updated.(Model)
+	if firstCommand == nil {
+		t.Fatal("first reconciliation did not notify")
+	}
+	command := firstCommand
+	for range 8 {
+		updated, command = model.Update(command())
+		model = updated.(Model)
+	}
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Removed from Resume") ||
+		!strings.Contains(view, "BOFURI — Episode 5 was completed") ||
+		!strings.Contains(view, "on AniList") {
+		t.Fatalf("removal notification missing:\n%s", view)
+	}
+	updated, secondCommand := model.Update(message)
+	model = updated.(Model)
+
+	if secondCommand != nil {
+		t.Fatal("repeated AniList refresh emitted a duplicate notification")
+	}
+}
+
 func TestHomeFilterAndVimListJumps(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")

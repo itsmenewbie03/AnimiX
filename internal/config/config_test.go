@@ -20,6 +20,40 @@ func TestDefaultUpdateChecksEnabledUnlessDisabled(t *testing.T) {
 	}
 }
 
+func TestResumeAniListSyncDefaultsOnAndCanBeDisabled(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	store := NewStore(path)
+
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.ResumeAniListSyncEnabled() {
+		t.Fatal("Resume AniList sync should be enabled by default")
+	}
+
+	disabled := false
+	config.SyncResumeWithAniList = &disabled
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ResumeAniListSyncEnabled() {
+		t.Fatal("sync_resume_with_anilist = false was ignored")
+	}
+	settingsData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(settingsData), "sync_resume_with_anilist = false") {
+		t.Fatalf("config.toml missing Resume sync setting: %s", settingsData)
+	}
+}
+
 func TestAutoPlayNextEpisodeUsesUnsetAskState(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")

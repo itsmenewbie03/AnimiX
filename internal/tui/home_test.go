@@ -366,6 +366,153 @@ func TestHomeFeedsRenderOneListAndPreserveOverlap(t *testing.T) {
 	}
 }
 
+func TestAniListProgressReconcilesResumeEntries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		episode    string
+		progress   int
+		mode       appconfig.ResumeAniListSyncMode
+		linked     bool
+		wantResume bool
+		wantNotify bool
+	}{
+		{name: "whole episode filtered", episode: "5", progress: 5, mode: appconfig.ResumeAniListSyncFilter, linked: true, wantNotify: true},
+		{name: "whole episode marked watched", episode: "5", progress: 5, mode: appconfig.ResumeAniListSyncMarkWatched, linked: true, wantNotify: true},
+		{name: "fractional episode not yet watched", episode: "5.5", progress: 5, mode: appconfig.ResumeAniListSyncFilter, linked: true, wantResume: true},
+		{name: "fractional episode filtered", episode: "5.5", progress: 6, mode: appconfig.ResumeAniListSyncFilter, linked: true, wantNotify: true},
+		{name: "later whole episode remains", episode: "6", progress: 5, mode: appconfig.ResumeAniListSyncFilter, linked: true, wantResume: true},
+		{name: "reconciliation off", episode: "5", progress: 5, mode: appconfig.ResumeAniListSyncOff, linked: true, wantResume: true},
+		{name: "unlinked entry remains", episode: "5", progress: 5, mode: appconfig.ResumeAniListSyncFilter, wantResume: true},
+		{name: "unparseable episode remains", episode: "special", progress: 99, mode: appconfig.ResumeAniListSyncFilter, linked: true, wantResume: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			model := New(nil, nil, "", "mpv", WithResumeAniListSync(test.mode))
+			model.loading = false
+			mediaID := 0
+			if test.linked {
+				mediaID = 42
+			}
+			model.continueWatching = []appconfig.ContinueEntry{{
+				Title: "BOFURI", AniListMediaID: mediaID, EpisodeNumber: test.episode,
+				Position: 5, Duration: 100,
+			}}
+			model.refreshResumeWatching()
+
+			updated, command := model.Update(aniListLibraryMsg{library: anilist.Library{Entries: []anilist.Entry{{
+				MediaID: 42, Type: "ANIME", Status: "CURRENT", Progress: test.progress,
+			}}}})
+			model = updated.(Model)
+			gotResume := len(model.resumeWatchingList.Items()) == 1
+			if gotResume != test.wantResume {
+				t.Fatalf("Resume visibility = %t, want %t", gotResume, test.wantResume)
+			}
+			if (command != nil) != test.wantNotify {
+				t.Fatalf("notification command present = %t, want %t", command != nil, test.wantNotify)
+			}
+		})
+	}
+}
+
+func TestAniListProgressReconciliationNotifiesOnlyOnce(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.continueWatching = []appconfig.ContinueEntry{{
+		Title: "BOFURI", SourceID: "source", MediaURL: "bofuri", AniListMediaID: 42,
+		EpisodeNumber: "5", Position: 5, Duration: 100,
+	}}
+	model.refreshResumeWatching()
+	message := aniListLibraryMsg{library: anilist.Library{Entries: []anilist.Entry{{
+		MediaID: 42, Type: "ANIME", Status: "CURRENT", Progress: 5,
+	}}}}
+
+	updated, firstCommand := model.Update(message)
+	model = updated.(Model)
+	if firstCommand == nil {
+		t.Fatal("first reconciliation did not notify")
+	}
+	command := firstCommand
+	for range 8 {
+		updated, command = model.Update(command())
+		model = updated.(Model)
+	}
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Removed from Resume") ||
+		!strings.Contains(view, "BOFURI — Episode 5 is marked as") ||
+		!strings.Contains(view, "watched on AniList") {
+		t.Fatalf("removal notification missing:\n%s", view)
+	}
+	updated, secondCommand := model.Update(message)
+	model = updated.(Model)
+
+	if secondCommand != nil {
+		t.Fatal("repeated AniList refresh emitted a duplicate notification")
+	}
+}
+
+func TestRemotelyWatchedResumeEntryStaysHiddenAfterRelaunch(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	entry := appconfig.ContinueEntry{
+		Title: "BOFURI", SourceID: "source", MediaURL: "bofuri", AniListMediaID: 42,
+		EpisodeNumber: "5", Position: 5, Duration: 100,
+	}
+	if err := store.SaveContinue(entry); err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(nil, store, "", "mpv", WithResumeAniListSync(appconfig.ResumeAniListSyncMarkWatched))
+	model.loading = false
+	model.continueWatching = []appconfig.ContinueEntry{entry}
+	model.refreshResumeWatching()
+	updated, _ := model.Update(aniListLibraryMsg{library: anilist.Library{Entries: []anilist.Entry{{
+		MediaID: 42, Type: "ANIME", Status: "CURRENT", Progress: 5,
+	}}}})
+	model = updated.(Model)
+	if len(model.resumeWatchingList.Items()) != 0 {
+		t.Fatal("remotely watched entry remained visible before relaunch")
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relaunched := New(nil, store, "", "mpv", WithResumeAniListSync(appconfig.ResumeAniListSyncMarkWatched))
+	updated, _ = relaunched.Update(repositoriesMsg{continueWatching: loaded.ContinueWatching})
+	relaunched = updated.(Model)
+	if len(relaunched.resumeWatchingList.Items()) != 0 {
+		t.Fatal("remotely watched entry reappeared in Resume after relaunch")
+	}
+}
+
+func TestRemoteWatchedMarkerOnlyFiltersMarkWatchedMode(t *testing.T) {
+	t.Parallel()
+	entry := appconfig.ContinueEntry{
+		Title: "BOFURI", SourceID: "source", MediaURL: "bofuri", EpisodeNumber: "5",
+		Position: 5, Duration: 100, RemoteWatched: []string{"5"},
+	}
+	for _, test := range []struct {
+		mode       appconfig.ResumeAniListSyncMode
+		wantResume bool
+	}{
+		{mode: appconfig.ResumeAniListSyncOff, wantResume: true},
+		{mode: appconfig.ResumeAniListSyncFilter, wantResume: true},
+		{mode: appconfig.ResumeAniListSyncMarkWatched},
+	} {
+		model := New(nil, nil, "", "mpv", WithResumeAniListSync(test.mode))
+		model.continueWatching = []appconfig.ContinueEntry{entry}
+		model.refreshResumeWatching()
+		gotResume := len(model.resumeWatchingList.Items()) == 1
+		if gotResume != test.wantResume {
+			t.Errorf("mode %q Resume visibility = %t, want %t", test.mode, gotResume, test.wantResume)
+		}
+	}
+}
+
 func TestHomeFilterAndVimListJumps(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,6 +100,7 @@ type Model struct {
 	loading              bool
 	err                  error
 	status               string
+	statusTitle          string
 	spinner              spinner.Model
 	updateProgress       progress.Model
 	search               textinput.Model
@@ -144,6 +146,7 @@ type Model struct {
 	playbackReturnHome   bool
 	pendingPlayback      *appconfig.ContinueEntry
 	autoPlayNextEpisode  *bool
+	resumeAniListSync    appconfig.ResumeAniListSyncMode
 	autoPlay             autoPlayState
 	malID                int
 	updateService        UpdateService
@@ -178,6 +181,12 @@ func WithAutoPlayNextEpisode(setting *bool) Option {
 		}
 		enabled := *setting
 		model.autoPlayNextEpisode = &enabled
+	}
+}
+
+func WithResumeAniListSync(mode appconfig.ResumeAniListSyncMode) Option {
+	return func(model *Model) {
+		model.resumeAniListSync = mode
 	}
 }
 
@@ -449,6 +458,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		stage:                stageSources,
 		homeType:             "anime",
 		homeFocus:            homeFocusNone,
+		resumeAniListSync:    appconfig.ResumeAniListSyncFilter,
 		loading:              true,
 		spinner:              spin,
 		updateProgress:       updateProgress,
@@ -818,6 +828,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.editingEntry = msg.entry
+			m.refreshResumeWatching()
 			m.refreshNewEpisodes(time.Now())
 			m.refreshContinueWatching()
 			m.stage = stageAniListLibrary
@@ -873,6 +884,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshNewEpisodes(time.Now())
 		m.refreshContinueWatching()
 		m.status = ""
+		m.refreshResumeWatching()
 		return m, nil
 	case aniListLogoutMsg:
 		m.loading, m.err = false, msg.err
@@ -983,10 +995,11 @@ func (m Model) flushFeedback(command tea.Cmd) (tea.Model, tea.Cmd) {
 	}
 	if m.status != "" {
 		commands = append(commands, m.notifier.Notify(notification.Notice{
+			Title:   m.statusTitle,
 			Message: m.status,
 			Level:   notification.Info,
 		}))
-		m.status = ""
+		m.status, m.statusTitle = "", ""
 	}
 	if len(commands) == 0 {
 		return m, nil
@@ -2294,9 +2307,37 @@ func (m *Model) refreshContinueWatching() {
 }
 
 func (m *Model) refreshResumeWatching() {
+	previous := make(map[string]bool, len(m.resumeWatchingList.Items()))
+	for _, raw := range m.resumeWatchingList.Items() {
+		if item, ok := raw.(resumeWatchingListItem); ok {
+			previous[resumeEntryKey(item.entry)] = true
+		}
+	}
 	items := make([]list.Item, 0, len(m.continueWatching))
-	for _, entry := range m.continueWatching {
+	removed := make([]appconfig.ContinueEntry, 0)
+	for index, entry := range m.continueWatching {
 		if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
+			continue
+		}
+		if m.resumeEntryMarkedWatched(entry) {
+			if previous[resumeEntryKey(entry)] {
+				removed = append(removed, entry)
+			}
+			continue
+		}
+		if m.resumeAniListSync != appconfig.ResumeAniListSyncOff && m.resumeCompletedOnAniList(entry) {
+			if m.resumeAniListSync == appconfig.ResumeAniListSyncMarkWatched {
+				entry.RemoteWatched = appendUniqueString(entry.RemoteWatched, normalizedEpisodeNumber(entry.EpisodeNumber))
+				m.continueWatching[index] = entry
+				if m.configStore != nil {
+					if err := m.configStore.SaveContinue(entry); err != nil {
+						m.err = fmt.Errorf("mark Resume entry remotely watched: %w", err)
+					}
+				}
+			}
+			if previous[resumeEntryKey(entry)] {
+				removed = append(removed, entry)
+			}
 			continue
 		}
 		items = append(items, resumeWatchingListItem{entry: entry})
@@ -2304,6 +2345,47 @@ func (m *Model) refreshResumeWatching() {
 	replaceHomeItems(&m.resumeWatchingList, items)
 	m.resizeResumeWatchingList()
 	m.normalizeHomeFocus()
+	if len(removed) == 1 {
+		entry := removed[0]
+		m.statusTitle = "Removed from Resume"
+		m.status = entry.Title + " — " + continueEpisodeLabel(entry.EpisodeNumber, entry.EpisodeName) + " is marked as watched on AniList"
+	} else if len(removed) > 1 {
+		m.statusTitle = "Removed from Resume"
+		m.status = fmt.Sprintf("%d entries are marked as watched on AniList", len(removed))
+	}
+}
+
+func (m Model) resumeEntryMarkedWatched(entry appconfig.ContinueEntry) bool {
+	if m.resumeAniListSync != appconfig.ResumeAniListSyncMarkWatched {
+		return false
+	}
+	episode := normalizedEpisodeNumber(entry.EpisodeNumber)
+	for _, watched := range entry.RemoteWatched {
+		if normalizedEpisodeNumber(watched) == episode {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) resumeCompletedOnAniList(entry appconfig.ContinueEntry) bool {
+	episode, err := strconv.ParseFloat(normalizedEpisodeNumber(entry.EpisodeNumber), 64)
+	if err != nil || episode <= 0 {
+		return false
+	}
+	progress, linked := entry.AniListProgress, entry.AniListEntryID != 0 || entry.AniListMediaID != 0
+	for _, tracked := range m.trackingEntries {
+		if (entry.AniListEntryID != 0 && tracked.ID == entry.AniListEntryID) ||
+			(entry.AniListMediaID != 0 && tracked.MediaID == entry.AniListMediaID) {
+			progress, linked = tracked.Progress, true
+			break
+		}
+	}
+	return linked && progress >= int(math.Ceil(episode))
+}
+
+func resumeEntryKey(entry appconfig.ContinueEntry) string {
+	return entry.SourceID + "\x00" + entry.MediaURL
 }
 
 func (m *Model) normalizeHomeFocus() {

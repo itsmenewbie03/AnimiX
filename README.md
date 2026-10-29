@@ -148,13 +148,18 @@ prompt:
 auto_play_next_episode = true
 ```
 
-Resume entries linked to AniList are hidden when the tracker reports their
-episode completed on another device. This is enabled by default and preserves
-local playback history. Disable only the Resume reconciliation with:
+Resume entries linked to AniList can follow tracker progress across devices.
+The default `filter` mode derives Resume visibility from current AniList
+progress without changing local playback history:
 
 ```toml
-sync_resume_with_anilist = false
+sync_resume_with_anilist = "filter"
 ```
+
+Use `"off"` to ignore AniList progress. Use `"mark_watched"` to persist a
+remotely-watched marker in local history, keeping matched episodes out of Resume
+across relaunches and AniList progress rollbacks without deleting their saved
+playback position.
 
 ## 🔨 Building
 
@@ -212,9 +217,9 @@ days.
 - Local mpv history stays separate from AniList. **Resume Watching** shows the
   newest incomplete playback first, records final position and duration when
   mpv exits, and hides episodes at least 90% complete. AniList-linked entries
-  also leave Resume when tracker progress reaches that episode; fractional
+  also leave Resume when tracker progress reaches that episode. Fractional
   episode numbers use the next whole progress value (for example, `5.5` is
-  complete at AniList progress `6`).
+  marked watched at AniList progress `6`).
 
 ## 📺 Playback & Streams
 

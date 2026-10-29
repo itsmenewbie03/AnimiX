@@ -125,7 +125,7 @@ func main() {
 
 	options := []tui.Option{
 		tui.WithAutoPlayNextEpisode(config.AutoPlayNextEpisode),
-		tui.WithResumeAniListSync(config.ResumeAniListSyncEnabled()),
+		tui.WithResumeAniListSync(config.ResumeSyncMode()),
 	}
 	if config.UpdatesEnabled() {
 		options = append(options, tui.WithUpdateCheck(appupdate.NewClient(), version))

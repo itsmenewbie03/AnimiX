@@ -146,7 +146,7 @@ type Model struct {
 	playbackReturnHome   bool
 	pendingPlayback      *appconfig.ContinueEntry
 	autoPlayNextEpisode  *bool
-	resumeAniListSync    bool
+	resumeAniListSync    appconfig.ResumeAniListSyncMode
 	autoPlay             autoPlayState
 	malID                int
 	updateService        UpdateService
@@ -184,9 +184,9 @@ func WithAutoPlayNextEpisode(setting *bool) Option {
 	}
 }
 
-func WithResumeAniListSync(enabled bool) Option {
+func WithResumeAniListSync(mode appconfig.ResumeAniListSyncMode) Option {
 	return func(model *Model) {
-		model.resumeAniListSync = enabled
+		model.resumeAniListSync = mode
 	}
 }
 
@@ -458,7 +458,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		stage:                stageSources,
 		homeType:             "anime",
 		homeFocus:            homeFocusNone,
-		resumeAniListSync:    true,
+		resumeAniListSync:    appconfig.ResumeAniListSyncFilter,
 		loading:              true,
 		spinner:              spin,
 		updateProgress:       updateProgress,
@@ -2315,11 +2315,26 @@ func (m *Model) refreshResumeWatching() {
 	}
 	items := make([]list.Item, 0, len(m.continueWatching))
 	removed := make([]appconfig.ContinueEntry, 0)
-	for _, entry := range m.continueWatching {
+	for index, entry := range m.continueWatching {
 		if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
 			continue
 		}
-		if m.resumeAniListSync && m.resumeCompletedOnAniList(entry) {
+		if m.resumeEntryMarkedWatched(entry) {
+			if previous[resumeEntryKey(entry)] {
+				removed = append(removed, entry)
+			}
+			continue
+		}
+		if m.resumeAniListSync != appconfig.ResumeAniListSyncOff && m.resumeCompletedOnAniList(entry) {
+			if m.resumeAniListSync == appconfig.ResumeAniListSyncMarkWatched {
+				entry.RemoteWatched = appendUniqueString(entry.RemoteWatched, normalizedEpisodeNumber(entry.EpisodeNumber))
+				m.continueWatching[index] = entry
+				if m.configStore != nil {
+					if err := m.configStore.SaveContinue(entry); err != nil {
+						m.err = fmt.Errorf("mark Resume entry remotely watched: %w", err)
+					}
+				}
+			}
 			if previous[resumeEntryKey(entry)] {
 				removed = append(removed, entry)
 			}
@@ -2333,11 +2348,24 @@ func (m *Model) refreshResumeWatching() {
 	if len(removed) == 1 {
 		entry := removed[0]
 		m.statusTitle = "Removed from Resume"
-		m.status = entry.Title + " — " + continueEpisodeLabel(entry.EpisodeNumber, entry.EpisodeName) + " was completed on AniList"
+		m.status = entry.Title + " — " + continueEpisodeLabel(entry.EpisodeNumber, entry.EpisodeName) + " is marked as watched on AniList"
 	} else if len(removed) > 1 {
 		m.statusTitle = "Removed from Resume"
-		m.status = fmt.Sprintf("%d entries were completed on AniList", len(removed))
+		m.status = fmt.Sprintf("%d entries are marked as watched on AniList", len(removed))
 	}
+}
+
+func (m Model) resumeEntryMarkedWatched(entry appconfig.ContinueEntry) bool {
+	if m.resumeAniListSync != appconfig.ResumeAniListSyncMarkWatched {
+		return false
+	}
+	episode := normalizedEpisodeNumber(entry.EpisodeNumber)
+	for _, watched := range entry.RemoteWatched {
+		if normalizedEpisodeNumber(watched) == episode {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) resumeCompletedOnAniList(entry appconfig.ContinueEntry) bool {

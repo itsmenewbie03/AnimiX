@@ -20,7 +20,7 @@ func TestDefaultUpdateChecksEnabledUnlessDisabled(t *testing.T) {
 	}
 }
 
-func TestResumeAniListSyncDefaultsOnAndCanBeDisabled(t *testing.T) {
+func TestResumeAniListSyncModes(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	store := NewStore(path)
@@ -29,28 +29,52 @@ func TestResumeAniListSyncDefaultsOnAndCanBeDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.ResumeAniListSyncEnabled() {
-		t.Fatal("Resume AniList sync should be enabled by default")
+	if mode := config.ResumeSyncMode(); mode != ResumeAniListSyncFilter {
+		t.Fatalf("default Resume AniList sync mode = %q, want filter", mode)
 	}
 
-	disabled := false
-	config.SyncResumeWithAniList = &disabled
-	if err := store.Save(config); err != nil {
-		t.Fatal(err)
+	for _, mode := range []ResumeAniListSyncMode{
+		ResumeAniListSyncOff, ResumeAniListSyncFilter, ResumeAniListSyncMarkWatched,
+	} {
+		config.SyncResumeWithAniList = mode
+		if err := store.Save(config); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := loaded.ResumeSyncMode(); got != mode {
+			t.Fatalf("loaded Resume AniList sync mode = %q, want %q", got, mode)
+		}
+		settingsData, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(settingsData), `sync_resume_with_anilist = "`+string(mode)+`"`) {
+			t.Fatalf("config.toml missing Resume sync mode %q: %s", mode, settingsData)
+		}
 	}
-	loaded, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.ResumeAniListSyncEnabled() {
-		t.Fatal("sync_resume_with_anilist = false was ignored")
-	}
-	settingsData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(settingsData), "sync_resume_with_anilist = false") {
-		t.Fatalf("config.toml missing Resume sync setting: %s", settingsData)
+}
+
+func TestResumeAniListSyncMigratesBooleanValues(t *testing.T) {
+	t.Parallel()
+	for value, want := range map[string]ResumeAniListSyncMode{
+		"true": ResumeAniListSyncFilter, "false": ResumeAniListSyncOff,
+	} {
+		t.Run(value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte("sync_resume_with_anilist = "+value+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := NewStore(path).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := config.ResumeSyncMode(); got != want {
+				t.Fatalf("boolean %s migrated to %q, want %q", value, got, want)
+			}
+		})
 	}
 }
 

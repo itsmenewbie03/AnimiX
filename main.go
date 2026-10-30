@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +18,7 @@ import (
 	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
+	"github.com/itsmenewbie03/animix/internal/discord"
 	"github.com/itsmenewbie03/animix/internal/mangareader"
 	anyruntime "github.com/itsmenewbie03/animix/internal/runtime"
 	"github.com/itsmenewbie03/animix/internal/tui"
@@ -25,14 +28,20 @@ import (
 var version = "dev"
 
 func main() {
+	if err := run(); err != nil {
+		fatal(err)
+	}
+}
+
+func run() error {
 	defaultRuntime, err := anyruntime.DefaultPath()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	defaultExtensions := defaultExtensionDirectory()
 	defaultConfig, err := appconfig.DefaultPath()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	javaPath := flag.String("java", "java", "Java executable used for the runtime bridge")
@@ -54,59 +63,59 @@ func main() {
 		}
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	store := appconfig.NewStore(*configPath)
 	if *editConfig {
 		if err := store.Ensure(); err != nil {
-			fatal(fmt.Errorf("prepare config: %w", err))
+			return fmt.Errorf("prepare config: %w", err)
 		}
 		if err := openConfigEditor(*configPath); err != nil {
-			fatal(err)
+			return err
 		}
-		return
+		return nil
 	}
 	config, err := store.Load()
 	if err != nil {
-		fatal(fmt.Errorf("load config: %w", err))
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	if installRuntime.enabled {
 		release, err := anyruntime.Resolve(ctx, installRuntime.spec)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 		destination := *runtimePath
 		if !runtimeFlagSet {
 			destination, err = anyruntime.Path(release.Source, release.Version)
 			if err != nil {
-				fatal(err)
+				return err
 			}
 			*runtimePath = destination
 		}
 		fmt.Fprintf(os.Stderr, "Installing %s runtime %s…\n", release.Source, release.Version)
 		if err := anyruntime.Install(ctx, release, destination); err != nil {
-			fatal(err)
+			return err
 		}
 		if !runtimeFlagSet {
 			if err := anyruntime.SetCurrent(release.Source, release.Version); err != nil {
-				fatal(fmt.Errorf("record default runtime: %w", err))
+				return fmt.Errorf("record default runtime: %w", err)
 			}
 		}
 	}
 	if _, err := os.Stat(*runtimePath); err != nil {
-		fatal(fmt.Errorf("runtime not found at %s (run with --install-runtime or pass --runtime): %w", *runtimePath, err))
+		return fmt.Errorf("runtime not found at %s (run with --install-runtime or pass --runtime): %w", *runtimePath, err)
 	}
 	if _, err := exec.LookPath(*javaPath); err != nil {
-		fatal(fmt.Errorf("Java executable %q not found: %w", *javaPath, err))
+		return fmt.Errorf("Java executable %q not found: %w", *javaPath, err)
 	}
 	if err := os.MkdirAll(*extensionsPath, 0o755); err != nil {
-		fatal(fmt.Errorf("create extensions directory: %w", err))
+		return fmt.Errorf("create extensions directory: %w", err)
 	}
 
 	client, err := bridge.Start(ctx, *javaPath, *runtimePath)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	defer client.Close()
 	service := catalog.NewService(client)
@@ -118,16 +127,29 @@ func main() {
 		defer diagnosticCancel()
 		sources, err := service.Sources(diagnosticContext, *extensionsPath)
 		if err != nil {
-			fatal(fmt.Errorf("bridge diagnostic failed: %w", err))
+			return fmt.Errorf("bridge diagnostic failed: %w", err)
 		}
 		fmt.Printf("Runtime: %s\nExtensions: %s\nSources loaded: %d\n", *runtimePath, *extensionsPath, len(sources))
 		for _, source := range sources {
 			fmt.Printf("- %s [%s, %s] %s\n", source.Name, source.Type, source.Language, source.ID)
 		}
-		return
+		return nil
 	}
 
+	presence := discord.New(ctx)
+	prefs := config.DiscordPreferences()
+	presence.Configure(discord.Settings{
+		Enabled: prefs.Enabled, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
+		ApplicationID: prefs.ApplicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork,
+	})
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 3*time.Second)
+		defer stop()
+		_ = presence.Close(cleanup)
+	}()
 	options := []tui.Option{
+		tui.WithAppContext(ctx),
+		tui.WithDiscordPresence(presence),
 		tui.WithAutoPlayNextEpisode(config.AutoPlayNextEpisode),
 		tui.WithResumeAniListSync(config.ResumeSyncMode()),
 		tui.WithMangaReader(reader),
@@ -138,10 +160,16 @@ func main() {
 	program := tea.NewProgram(
 		tui.New(service, store, *extensionsPath, *playerPath, options...),
 		tea.WithAltScreen(),
+		tea.WithContext(ctx),
+		tea.WithoutSignalHandler(),
 	)
-	if _, err := program.Run(); err != nil {
-		fatal(err)
+	_, err = program.Run()
+	interrupted := ctx.Err() != nil
+	cancel()
+	if err != nil && !interrupted {
+		return err
 	}
+	return nil
 }
 
 func openConfigEditor(path string) error {

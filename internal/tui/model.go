@@ -23,6 +23,7 @@ import (
 	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
+	"github.com/itsmenewbie03/animix/internal/discord"
 	"github.com/itsmenewbie03/animix/internal/mangareader"
 	"github.com/itsmenewbie03/animix/internal/notification"
 	"github.com/itsmenewbie03/animix/internal/player"
@@ -59,6 +60,8 @@ const (
 	stageCloudflareUserAgent
 	stageUpdatePrompt
 	stageAutoPlayPrompt
+	stageDiscord
+	stageDiscordToken
 )
 
 type cloudflareOperation uint8
@@ -95,6 +98,10 @@ const (
 )
 
 type Model struct {
+	appContext            context.Context
+	discord               DiscordPresence
+	discordInput          textinput.Model
+	mangaPresence         map[string]discord.SessionID
 	service               *catalog.Service
 	configStore           *appconfig.Store
 	repositoryClient      *repository.Client
@@ -497,6 +504,12 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	tokenInput.Width = 70
 	tokenInput.EchoMode = textinput.EchoPassword
 	tokenInput.EchoCharacter = '•'
+	discordInput := textinput.New()
+	discordInput.Placeholder = "Discord user-session token"
+	discordInput.CharLimit = 2048
+	discordInput.Width = 70
+	discordInput.EchoMode = textinput.EchoPassword
+	discordInput.EchoCharacter = '•'
 	altTitle := textinput.New()
 	altTitle.Placeholder = "Alternative anime title"
 	altTitle.CharLimit = 200
@@ -577,6 +590,9 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	episodes.SetShowHelp(false)
 	episodes.DisableQuitKeybindings()
 	model := Model{
+		appContext:           context.Background(),
+		discordInput:         discordInput,
+		mangaPresence:        make(map[string]discord.SessionID),
 		service:              service,
 		configStore:          store,
 		repositoryClient:     repository.NewClient(),
@@ -644,6 +660,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.repositoryInput.Width = max(20, min(80, msg.Width-8))
 		m.extensionSearch.Width = max(20, min(70, msg.Width-8))
 		m.tokenInput.Width = max(20, min(80, msg.Width-8))
+		m.discordInput.Width = m.tokenInput.Width
 		m.alternativeTitle.Width = max(20, min(80, msg.Width-8))
 		m.cookieInput.Width = max(20, min(80, msg.Width-8))
 		m.userAgentInput.Width = max(20, min(80, msg.Width-8))
@@ -653,6 +670,11 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeContinueWatchingList()
 		m.resizeMangaLists()
 		m.resizeEpisodeList()
+		return m, nil
+	case discordTickMsg:
+		if m.stage == stageDiscord {
+			return m, discordTick()
+		}
 		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -857,7 +879,9 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
 			entry := msg.entry
+			var pending *mangareader.ProgressEvent
 			if event, ok := m.pendingMangaProgress[msg.session.ID]; ok {
+				pending = &event
 				entry.Page, entry.TotalPages = event.Page, event.Total
 				delete(m.pendingMangaProgress, msg.session.ID)
 			}
@@ -866,6 +890,10 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeMangaSessionID = msg.session.ID
 			m.activeMangaSessionURL = msg.session.URL
 			m.activeMangaReading = &entry
+			m.beginReaderPresence(msg.session.ID, entry)
+			if pending != nil {
+				m.updateReaderPresence(*pending, entry)
+			}
 			m.mangaReading = prependMangaReading(m.mangaReading, entry)
 			m.refreshMangaHome()
 			m.status = ""
@@ -889,7 +917,12 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.waitForMangaReaderProgress()
 		}
+		changed := entry.Page != msg.event.Page || entry.TotalPages != msg.event.Total
 		entry.Page, entry.TotalPages = msg.event.Page, msg.event.Total
+		m.updateReaderPresence(msg.event, entry)
+		if msg.event.PresenceOnly && !changed {
+			return m, m.waitForMangaReaderProgress()
+		}
 		entry.UpdatedAt = time.Now().UnixMilli()
 		m.mangaReaderSessions[msg.event.SessionID] = entry
 		m.activeMangaReading = &entry
@@ -1213,6 +1246,11 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.tokenInput, cmd = m.tokenInput.Update(message)
 		return m, cmd
 	}
+	if m.stage == stageDiscordToken {
+		var cmd tea.Cmd
+		m.discordInput, cmd = m.discordInput.Update(message)
+		return m, cmd
+	}
 	if m.stage == stageAlternativeTitle {
 		var cmd tea.Cmd
 		m.alternativeTitle, cmd = m.alternativeTitle.Update(message)
@@ -1281,6 +1319,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.updateHomeFilter(key)
 		}
 	}
+	if key.String() == "p" && m.stage == stageSources {
+		m.stage = stageDiscord
+		return m, discordTick()
+	}
 	if m.stage == stageAutoPlayPrompt && m.autoPlay.phase == autoPlayPrompting {
 		return m.handleAutoPlayPromptKey(key)
 	}
@@ -1292,6 +1334,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateEvents = make(chan updateEventMsg)
 		m.notifier.Hide("update-available")
 		return m, tea.Batch(m.installUpdate(), m.waitUpdateEvent())
+	}
+	if m.stage == stageDiscord || m.stage == stageDiscordToken {
+		return m.handleDiscordKey(key)
 	}
 	if m.stage == stageCloudflareCookie {
 		switch key.String() {
@@ -1730,7 +1775,7 @@ func (m Model) acceptsTextInput() bool {
 		}
 	}
 	switch m.stage {
-	case stageSearch, stageRepositoryAdd, stageExtensionSearch, stageAniListToken,
+	case stageSearch, stageRepositoryAdd, stageExtensionSearch, stageAniListToken, stageDiscordToken,
 		stageAlternativeTitle, stageCloudflareCookie, stageCloudflareUserAgent:
 		return true
 	default:
@@ -1821,8 +1866,13 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		}
 		m.selectedEpisode = selected.episode
 		if !m.selectedSource.IsAnime() {
+			cover := firstNonEmpty(m.details.Cover, m.details.Thumbnail, m.selectedMedia.Cover, m.selectedMedia.Thumbnail)
+			if m.resolvingEpisode != nil {
+				cover = firstNonEmpty(m.resolvingEpisode.CoverURL, cover)
+			}
 			entry := appconfig.MangaReadingEntry{
 				Title:            firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle()),
+				CoverURL:         cover,
 				SourceID:         m.selectedSource.ID,
 				SourceName:       m.selectedSource.Name,
 				MediaURL:         firstNonEmpty(m.details.URL, m.selectedMedia.URL),
@@ -1918,6 +1968,7 @@ func (m Model) activateTrackedManga(entry anilist.Entry) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) resumeManga(entry appconfig.MangaReadingEntry) (tea.Model, tea.Cmd) {
+	entry.CoverURL = m.presenceCover(entry.AniListMediaID, entry.CoverURL)
 	for _, source := range m.sources {
 		if source.ID != entry.SourceID {
 			continue
@@ -1950,6 +2001,7 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 	}
 	entry := appconfig.ContinueEntry{
 		Title:         firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle()),
+		CoverURL:      firstNonEmpty(m.details.Cover, m.details.Thumbnail, m.selectedMedia.Cover, m.selectedMedia.Thumbnail),
 		SourceID:      m.selectedSource.ID,
 		SourceName:    m.selectedSource.Name,
 		MediaURL:      firstNonEmpty(m.details.URL, m.selectedMedia.URL),
@@ -1974,6 +2026,7 @@ func (m Model) playSelected() (tea.Model, tea.Cmd) {
 		entry.AniListTotal = m.resolvingEpisode.Total
 		entry.AniListStatus = m.resolvingEpisode.Status
 		entry.AniListMediaStatus = m.resolvingEpisode.MediaStatus
+		entry.CoverURL = firstNonEmpty(m.resolvingEpisode.CoverURL, entry.CoverURL)
 	}
 	for _, subtitle := range video.Subtitles {
 		if subtitle.File != "" {
@@ -2073,6 +2126,20 @@ func (m *Model) enrichPlaybackLinks() {
 	}
 }
 
+func (m Model) presenceCover(mediaID int, fallback ...string) string {
+	if mediaID != 0 {
+		if m.resolvingEpisode != nil && m.resolvingEpisode.MediaID == mediaID && m.resolvingEpisode.CoverURL != "" {
+			return m.resolvingEpisode.CoverURL
+		}
+		for _, tracked := range m.trackingEntries {
+			if tracked.MediaID == mediaID && tracked.CoverURL != "" {
+				return tracked.CoverURL
+			}
+		}
+	}
+	return firstNonEmpty(fallback...)
+}
+
 func matchingVideoIndex(videos []catalog.Video, quality string) int {
 	for index, video := range videos {
 		if video.Quality == quality || streamMatches(video, quality) {
@@ -2094,17 +2161,17 @@ func (m Model) startPlayer(video catalog.Video, entry appconfig.ContinueEntry) (
 		seriesTitle = firstNonEmpty(m.resolvingEpisode.Title, seriesTitle)
 	}
 	video.Title = playbackMediaTitle(seriesTitle, m.selectedEpisode)
-	session, err := player.MPVSession(m.player, video, entry.Position, m.skipChapters(entry.Duration)...)
-	if err != nil {
-		m.err = err
-		return m, nil
+	execution := &observedPlayback{
+		ctx: m.appContext, executable: m.player, video: video, entry: entry,
+		chapters: m.skipChapters(entry.Duration), presence: m.discord,
+		metadata: discord.Snapshot{
+			Kind: discord.Watching, Title: seriesTitle, Part: entry.EpisodeName, Number: entry.EpisodeNumber,
+			Total: entry.AniListTotal, AniListMediaID: entry.AniListMediaID,
+			CoverURL: m.presenceCover(entry.AniListMediaID, entry.CoverURL),
+		},
 	}
-	return m, tea.ExecProcess(session.Command, func(runErr error) tea.Msg {
-		progress, progressErr := session.Progress()
-		if progressErr != nil {
-			return playerFinishedMsg{err: errors.Join(runErr, progressErr), entry: &entry}
-		}
-		return playerFinishedMsg{err: runErr, progress: &progress, entry: &entry}
+	return m, tea.Exec(execution, func(runErr error) tea.Msg {
+		return playerFinishedMsg{err: runErr, progress: execution.progress, entry: &entry}
 	})
 }
 
@@ -2380,6 +2447,7 @@ func (m *Model) closeActiveMangaReader() {
 		return
 	}
 	id := m.activeMangaSessionID
+	m.endReaderPresence(id)
 	if err := m.mangaReader.CloseSession(id); err != nil {
 		m.err = fmt.Errorf("close manga reader: %w", err)
 	}
@@ -3715,6 +3783,9 @@ func (m Model) loadPages() tea.Cmd {
 
 func (m Model) openMangaReader(entry appconfig.MangaReadingEntry, pages []catalog.Page) tea.Cmd {
 	return func() tea.Msg {
+		if err := m.appContext.Err(); err != nil {
+			return mangaReaderOpenedMsg{err: err}
+		}
 		readerPages := make([]mangareader.Page, len(pages))
 		for index, page := range pages {
 			readerPages[index] = mangareader.Page{URL: page.URL, Headers: page.Headers}
@@ -3726,6 +3797,10 @@ func (m Model) openMangaReader(entry appconfig.MangaReadingEntry, pages []catalo
 		session, err := m.mangaReader.Open(mangareader.Session{
 			Title: entry.Title, Chapter: entry.ChapterName, Pages: readerPages, StartPage: entry.Page,
 		})
+		if err == nil && m.appContext.Err() != nil {
+			_ = m.mangaReader.CloseSession(session.ID)
+			return mangaReaderOpenedMsg{err: m.appContext.Err()}
+		}
 		return mangaReaderOpenedMsg{session: session, entry: entry, err: err}
 	}
 }
@@ -3735,7 +3810,14 @@ func (m Model) waitForMangaReaderProgress() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		return mangaReaderProgressMsg{event: <-m.mangaReader.Events()}
+		select {
+		case event, ok := <-m.mangaReader.Events():
+			if ok {
+				return mangaReaderProgressMsg{event: event}
+			}
+		case <-m.appContext.Done():
+		}
+		return nil
 	}
 }
 

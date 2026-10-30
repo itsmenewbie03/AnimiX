@@ -32,6 +32,10 @@ type Entry struct {
 	MediaID           int
 	MALID             int
 	Title             string
+	EnglishTitle      string
+	RomajiTitle       string
+	NativeTitle       string
+	Synonyms          []string
 	Type              string
 	Status            string
 	MediaStatus       string
@@ -145,10 +149,10 @@ func (c *Client) Library(ctx context.Context, token string) (Library, error) {
 	const query = `
 query ($userId: Int!) {
   anime: MediaListCollection(userId: $userId, type: ANIME, sort: UPDATED_TIME) {
-    lists { entries { id status progress updatedAt media { id idMal type status title { userPreferred } episodes chapters nextAiringEpisode { episode airingAt } startDate { year month day } endDate { year month day } } } }
+    lists { entries { id status progress updatedAt media { id idMal type status title { userPreferred english romaji native } synonyms episodes chapters nextAiringEpisode { episode airingAt } startDate { year month day } endDate { year month day } } } }
   }
   manga: MediaListCollection(userId: $userId, type: MANGA, sort: UPDATED_TIME) {
-    lists { entries { id status progress updatedAt media { id type title { userPreferred } episodes chapters nextAiringEpisode { episode } } } }
+    lists { entries { id status progress updatedAt media { id type title { userPreferred english romaji native } synonyms episodes chapters nextAiringEpisode { episode } } } }
   }
 }`
 	type media struct {
@@ -160,7 +164,11 @@ query ($userId: Int!) {
 		Chapters int    `json:"chapters"`
 		Title    struct {
 			UserPreferred string `json:"userPreferred"`
+			English       string `json:"english"`
+			Romaji        string `json:"romaji"`
+			Native        string `json:"native"`
 		} `json:"title"`
+		Synonyms          []string `json:"synonyms"`
 		NextAiringEpisode *struct {
 			Episode  int   `json:"episode"`
 			AiringAt int64 `json:"airingAt"`
@@ -210,6 +218,8 @@ query ($userId: Int!) {
 			}
 			result.Entries = append(result.Entries, Entry{
 				ID: item.ID, MediaID: item.Media.ID, MALID: item.Media.IDMal, Title: item.Media.Title.UserPreferred,
+				EnglishTitle: item.Media.Title.English, RomajiTitle: item.Media.Title.Romaji,
+				NativeTitle: item.Media.Title.Native, Synonyms: item.Media.Synonyms,
 				Type: item.Media.Type, Status: item.Status, MediaStatus: item.Media.Status, UpdatedAt: item.UpdatedAt,
 				Progress: item.Progress, Total: total, Available: available,
 				NextAiringEpisode: next, StartDate: item.Media.StartDate.time(), EndDate: item.Media.EndDate.time(),

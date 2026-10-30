@@ -16,6 +16,7 @@ import (
 	"github.com/itsmenewbie03/animix/internal/aniskip"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
+	"github.com/itsmenewbie03/animix/internal/mangareader"
 	"github.com/itsmenewbie03/animix/internal/player"
 	"github.com/itsmenewbie03/animix/internal/repository"
 	appupdate "github.com/itsmenewbie03/animix/internal/update"
@@ -24,6 +25,24 @@ import (
 type fakeUpdateService struct {
 	release   appupdate.Release
 	installed bool
+}
+
+type fakeMangaReader struct {
+	session mangareader.Session
+	events  chan mangareader.ProgressEvent
+	closed  string
+}
+
+func (reader *fakeMangaReader) Open(session mangareader.Session) (mangareader.OpenedSession, error) {
+	reader.session = session
+	return mangareader.OpenedSession{ID: "reader-session", URL: "http://127.0.0.1/reader-session"}, nil
+}
+
+func (reader *fakeMangaReader) Events() <-chan mangareader.ProgressEvent { return reader.events }
+
+func (reader *fakeMangaReader) CloseSession(id string) error {
+	reader.closed = id
+	return nil
 }
 
 func boolPointer(value bool) *bool { return &value }
@@ -363,6 +382,546 @@ func TestHomeFeedsRenderOneListAndPreserveOverlap(t *testing.T) {
 	}
 	if !strings.Contains(view, "Resume 1") || !strings.Contains(view, "New Episodes 1") || !strings.Contains(view, "Watching 1") {
 		t.Fatalf("feed counts missing:\n%s", view)
+	}
+}
+
+func TestMangaHomeShowsResumeAndTrackerStatusFeeds(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.width, model.height = 120, 40
+	model.homeType = "manga"
+	model.trackingEntries = []anilist.Entry{
+		{MediaID: 1, Title: "Reading Manga", Type: "MANGA", Status: "CURRENT", Progress: 4, Total: 20},
+		{MediaID: 2, Title: "Finished Manga", Type: "MANGA", Status: "COMPLETED", Progress: 12, Total: 12},
+		{MediaID: 3, Title: "Planned Manga", Type: "MANGA", Status: "PLANNING"},
+		{MediaID: 4, Title: "Anime", Type: "ANIME", Status: "CURRENT"},
+	}
+	model.mangaReading = []appconfig.MangaReadingEntry{{
+		Title: "Local Manga", ChapterNumber: "7", Page: 3, TotalPages: 18,
+	}}
+	model.refreshMangaHome()
+
+	view := ansi.Strip(model.sourcesView())
+	for _, want := range []string{"Resume 1", "Reading 1", "Completed 1", "Planning 1", "All 3", "Local Manga", "Chapter 7", "Page 3/18"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Manga Home missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Reading Manga") {
+		t.Fatalf("Resume feed rendered tracker entry:\n%s", view)
+	}
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	model = updated.(Model)
+	view = ansi.Strip(model.sourcesView())
+	if !strings.Contains(view, "Reading Manga") || strings.Contains(view, "Local Manga") {
+		t.Fatalf("Reading feed rendered wrong entries:\n%s", view)
+	}
+}
+
+func TestMangaHomeFilterAcceptsTyping(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = false
+	model.width, model.height = 120, 40
+	model.homeType = "manga"
+	model.mangaFeed = mangaFeedAll
+	model.trackingEntries = []anilist.Entry{
+		{MediaID: 1, Title: "Quiet Manga", Type: "MANGA", Status: "CURRENT"},
+		{MediaID: 2, Title: "Other Manga", Type: "MANGA", Status: "COMPLETED"},
+	}
+	model.refreshMangaHome()
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	model = updated.(Model)
+	if !model.mangaTrackingList.SettingFilter() || !model.acceptsTextInput() {
+		t.Fatal("manga feed did not enter filter mode")
+	}
+
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	model = updated.(Model)
+	if model.showKeyHelp || model.mangaTrackingList.FilterValue() != "q" {
+		t.Fatalf("manga filter typed %q help %v", model.mangaTrackingList.FilterValue(), model.showKeyHelp)
+	}
+
+	updated, _ = model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	model = updated.(Model)
+	if model.showKeyHelp || model.mangaTrackingList.FilterValue() != "q?" {
+		t.Fatalf("manga filter typed %q help %v", model.mangaTrackingList.FilterValue(), model.showKeyHelp)
+	}
+}
+
+func TestMangaPagesErrorOnlyKeepsPendingReaderForCloudflareRetry(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv", WithMangaReader(&fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}))
+	model.loading = true
+	model.stage = stagePages
+	model.pendingMangaReading = &appconfig.MangaReadingEntry{Title: "Local Manga", ChapterURL: "/chapter-1"}
+
+	updated, _ := model.update(pagesMsg{err: fmt.Errorf("extension request failed")})
+	model = updated.(Model)
+	if model.pendingMangaReading != nil {
+		t.Fatalf("failed page load kept stale reader request: %#v", model.pendingMangaReading)
+	}
+	if model.loading {
+		t.Fatal("failed page load left the model loading")
+	}
+
+	model.loading = true
+	model.pendingMangaReading = &appconfig.MangaReadingEntry{Title: "Local Manga", ChapterURL: "/chapter-1"}
+	updated, _ = model.update(pagesMsg{err: fmt.Errorf("cloudflare challenge required")})
+	model = updated.(Model)
+	if model.pendingMangaReading == nil {
+		t.Fatal("cloudflare retry dropped the pending reader request")
+	}
+	if model.cloudflareOperation != cloudflarePages {
+		t.Fatalf("cloudflare operation = %d, want pages", model.cloudflareOperation)
+	}
+}
+
+func TestMangaResumeOpensSavedPageAndPersistsReaderProgress(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	reader := &fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}
+	model := New(nil, store, "", "mpv", WithMangaReader(reader))
+	model.sources = []catalog.Source{{ID: "manga-source", Name: "Manga Source", Type: "manga"}}
+	entry := appconfig.MangaReadingEntry{
+		Title: "Local Manga", SourceID: "manga-source", SourceName: "Manga Source",
+		MediaURL: "/title", ChapterURL: "/chapter-7", ChapterName: "Chapter 7",
+		ChapterNumber: "7", Page: 3, TotalPages: 8,
+	}
+
+	updated, command := model.resumeManga(entry)
+	model = updated.(Model)
+	if command == nil || model.selectedEpisode.URL != "/chapter-7" || model.pendingMangaReading == nil {
+		t.Fatalf("resume state = episode %#v pending %#v command %v", model.selectedEpisode, model.pendingMangaReading, command)
+	}
+
+	updated, command = model.update(pagesMsg{items: []catalog.Page{{URL: "one"}, {URL: "two"}, {URL: "three"}, {URL: "four"}}})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("pages did not open browser reader")
+	}
+	opened := command().(mangaReaderOpenedMsg)
+	if reader.session.StartPage != 3 || len(reader.session.Pages) != 4 {
+		t.Fatalf("browser reader session = %#v", reader.session)
+	}
+	updated, _ = model.update(opened)
+	model = updated.(Model)
+	updated, _ = model.update(mangaReaderProgressMsg{event: mangareader.ProgressEvent{SessionID: opened.session.ID, Page: 4, Total: 4}})
+	model = updated.(Model)
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MangaReading) != 1 || loaded.MangaReading[0].Page != 4 || model.mangaReading[0].Page != 4 {
+		t.Fatalf("persisted progress = %#v, model = %#v", loaded.MangaReading, model.mangaReading)
+	}
+	if model.status != "" {
+		t.Fatalf("page progress leaked into TUI status: %q", model.status)
+	}
+}
+
+func TestTrackedMangaUsesRememberedMangaSource(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.homeType = "manga"
+	model.sources = []catalog.Source{
+		{ID: "first", Type: "manga"},
+		{ID: "remembered", Type: "manga"},
+	}
+	model.activeSources = map[string]string{"manga": "remembered"}
+	entry := anilist.Entry{ID: 9, MediaID: 42, Title: "Tracked Manga", Type: "MANGA", Progress: 6}
+
+	updated, command := model.activateTrackedManga(entry)
+	model = updated.(Model)
+	if command == nil || model.selectedSource.ID != "remembered" || model.resolvingEpisode == nil || model.resolvingEpisode.Progress != 6 {
+		t.Fatalf("tracked manga resolution = source %#v resolving %#v command %v", model.selectedSource, model.resolvingEpisode, command)
+	}
+}
+
+func TestTrackedResolutionRetriesAniListTitlesForAnimeAndManga(t *testing.T) {
+	t.Parallel()
+	for _, itemType := range []string{"ANIME", "MANGA"} {
+		itemType := itemType
+		t.Run(strings.ToLower(itemType), func(t *testing.T) {
+			t.Parallel()
+			model := New(nil, nil, "", "mpv")
+			sourceType := strings.ToLower(itemType)
+			model.homeType = sourceType
+			model.sources = []catalog.Source{{ID: sourceType + "-source", Name: "Source", Type: sourceType}}
+			entry := anilist.Entry{
+				MediaID: 42, Type: itemType, Title: "Preferred Title",
+				EnglishTitle: "Localized Title", RomajiTitle: "Romaji Title",
+				NativeTitle: "原題", Synonyms: []string{"Known Alias"},
+			}
+
+			var updated tea.Model
+			if itemType == "ANIME" {
+				updated, _ = model.activateTrackedEpisode(entry)
+			} else {
+				updated, _ = model.activateTrackedManga(entry)
+			}
+			model = updated.(Model)
+			if model.resolutionQuery != "Preferred Title" {
+				t.Fatalf("first query = %q", model.resolutionQuery)
+			}
+
+			updated, command := model.update(searchMsg{pages: catalog.Pages{}})
+			model = updated.(Model)
+			if command == nil || model.stage == stageAlternativeTitle || model.resolutionQuery != "Localized Title" {
+				t.Fatalf("retry state = stage %d query %q command %v", model.stage, model.resolutionQuery, command)
+			}
+
+			updated, command = model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Localized Title", URL: "/match"}}}})
+			model = updated.(Model)
+			if command == nil || model.selectedMedia.URL != "/match" || !model.loading {
+				t.Fatalf("resolved state = media %#v loading %t command %v", model.selectedMedia, model.loading, command)
+			}
+		})
+	}
+}
+
+func TestTrackedResolutionFallsBackOnlyAfterTitleVariantsAreExhausted(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.homeType = "manga"
+	model.sources = []catalog.Source{{ID: "manga-source", Name: "Source", Type: "manga"}}
+	entry := anilist.Entry{
+		MediaID: 42, Type: "MANGA", Title: "Preferred Title",
+		EnglishTitle: "English Title", RomajiTitle: "Romaji Title", Synonyms: []string{"Known Alias"},
+	}
+	updated, _ := model.activateTrackedManga(entry)
+	model = updated.(Model)
+
+	updated, command := model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Unrelated Result", URL: "/fallback"}}}})
+	model = updated.(Model)
+	if command == nil || model.selectedMedia.URL != "" || model.resolutionQuery != "English Title" {
+		t.Fatalf("resolver accepted fallback before alternatives: media %#v query %q", model.selectedMedia, model.resolutionQuery)
+	}
+
+	for attempts := 0; attempts < 10 && model.selectedMedia.URL == "" && model.stage != stageAlternativeTitle; attempts++ {
+		updated, command = model.update(searchMsg{pages: catalog.Pages{}})
+		model = updated.(Model)
+	}
+	if model.selectedMedia.URL != "/fallback" || command == nil {
+		t.Fatalf("exhausted resolver did not use first fallback: media %#v stage %d", model.selectedMedia, model.stage)
+	}
+}
+
+func TestTrackedResolutionTriesSavedSourceMappingFirst(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.homeType = "anime"
+	model.sources = []catalog.Source{{ID: "anime-source", Name: "Source", Type: "anime"}}
+	model.mediaMappings = []appconfig.MediaMapping{{MediaID: 42, SourceID: "anime-source", Title: "Saved Provider Title"}}
+
+	updated, _ := model.activateTrackedEpisode(anilist.Entry{MediaID: 42, Type: "ANIME", Title: "AniList Title"})
+	model = updated.(Model)
+	if model.resolutionQuery != "Saved Provider Title" {
+		t.Fatalf("first resolution query = %q", model.resolutionQuery)
+	}
+}
+
+func TestTrackedResolutionExactAniListTitleBeatsSavedMapping(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	model := New(nil, store, "", "mpv")
+	model.homeType = "manga"
+	model.sources = []catalog.Source{{ID: "manga-source", Name: "Source", Type: "manga"}}
+	model.mediaMappings = []appconfig.MediaMapping{{MediaID: 125116, SourceID: "manga-source", Title: "○ and ×"}}
+	entry := anilist.Entry{
+		MediaID: 125116, Type: "MANGA", Title: "Tsue to Tsurugi no Wistoria",
+		EnglishTitle: "Wistoria: Wand and Sword", RomajiTitle: "Tsue to Tsurugi no Wistoria",
+		NativeTitle: "杖と剣のウィストリア",
+	}
+	updated, _ := model.activateTrackedManga(entry)
+	model = updated.(Model)
+	if model.resolutionQuery != "○ and ×" {
+		t.Fatalf("first query = %q, want the saved mapping", model.resolutionQuery)
+	}
+
+	// The stale mapping search returns the nonsense title.
+	updated, command := model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "○ and ×", URL: "/nonsense"}}}})
+	model = updated.(Model)
+	if command == nil || model.selectedMedia.URL != "" || model.resolutionQuery == "○ and ×" {
+		t.Fatalf("stale mapping was accepted without verification: media %#v query %q", model.selectedMedia, model.resolutionQuery)
+	}
+
+	// The next title variant returns the real manga.
+	updated, command = model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{
+		{Title: "Wistoria: Wand and Sword", URL: "/wistoria"},
+		{Title: "○ and ×", URL: "/nonsense"},
+	}}})
+	model = updated.(Model)
+	if command == nil || model.selectedMedia.URL != "/wistoria" {
+		t.Fatalf("exact AniList title lost to the saved mapping: media %#v", model.selectedMedia)
+	}
+
+	// Loading the details replaces the poisoned mapping.
+	updated, _ = model.update(detailsMsg{media: catalog.Media{Title: "Wistoria: Wand and Sword", URL: "/wistoria"}})
+	model = updated.(Model)
+	if len(model.mediaMappings) == 0 || model.mediaMappings[0].Title != "Wistoria: Wand and Sword" {
+		t.Fatalf("mapping was not repaired: %#v", model.mediaMappings)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MediaMappings) == 0 || loaded.MediaMappings[0].Title != "Wistoria: Wand and Sword" {
+		t.Fatalf("saved mapping was not repaired: %#v", loaded.MediaMappings)
+	}
+}
+
+func TestTrackedResolutionKeepsSavedMappingWithoutExactTitle(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.homeType = "manga"
+	model.sources = []catalog.Source{{ID: "manga-source", Name: "Source", Type: "manga"}}
+	model.mediaMappings = []appconfig.MediaMapping{{MediaID: 42, SourceID: "manga-source", Title: "Provider Only Title"}}
+	updated, _ := model.activateTrackedManga(anilist.Entry{
+		MediaID: 42, Type: "MANGA", Title: "AniList Title", EnglishTitle: "English Title",
+	})
+	model = updated.(Model)
+
+	updated, command := model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Provider Only Title", URL: "/saved"}}}})
+	model = updated.(Model)
+	for attempts := 0; attempts < 10 && model.selectedMedia.URL == ""; attempts++ {
+		if command == nil {
+			break
+		}
+		updated, command = model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Some Other Title", URL: "/other"}}}})
+		model = updated.(Model)
+	}
+	if model.selectedMedia.URL != "/saved" {
+		t.Fatalf("saved mapping lost without an exact title: media %#v", model.selectedMedia)
+	}
+}
+
+func TestLowConfidenceFallbackDoesNotPersistMapping(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	model := New(nil, store, "", "mpv")
+	model.homeType = "manga"
+	model.sources = []catalog.Source{{ID: "manga-source", Name: "Source", Type: "manga"}}
+	updated, _ := model.activateTrackedManga(anilist.Entry{MediaID: 77, Type: "MANGA", Title: "Tracked Title"})
+	model = updated.(Model)
+
+	var command tea.Cmd
+	for attempts := 0; attempts < 10; attempts++ {
+		updated, command = model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Totally Unrelated", URL: "/fallback"}}}})
+		model = updated.(Model)
+		if model.stage == stageAlternativeTitle || model.resolutionHasSaved {
+			break
+		}
+		if model.resolutionQuery == "" {
+			break
+		}
+	}
+	if model.selectedMedia.URL != "/fallback" || command == nil {
+		t.Fatalf("fallback was not used: media %#v query %q", model.selectedMedia, model.resolutionQuery)
+	}
+	updated, _ = model.update(detailsMsg{media: catalog.Media{Title: "Totally Unrelated", URL: "/fallback"}})
+	model = updated.(Model)
+	if len(model.mediaMappings) != 0 {
+		t.Fatalf("low-confidence fallback saved a mapping: %#v", model.mediaMappings)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MediaMappings) != 0 {
+		t.Fatalf("low-confidence fallback persisted a mapping: %#v", loaded.MediaMappings)
+	}
+}
+
+func TestTrackedResolutionTriesSecondHeavyTitleBelowPointEight(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.homeType = "manga"
+	model.sources = []catalog.Source{{ID: "manga-source", Name: "Source", Type: "manga"}}
+	entry := anilist.Entry{
+		MediaID: 42, Type: "MANGA", Title: "Example: Story",
+		EnglishTitle: "Example: Story", RomajiTitle: "Romaji: Tale",
+	}
+	updated, _ := model.activateTrackedManga(entry)
+	model = updated.(Model)
+
+	updated, _ = model.update(searchMsg{pages: catalog.Pages{}})
+	model = updated.(Model)
+	updated, _ = model.update(searchMsg{pages: catalog.Pages{}})
+	model = updated.(Model)
+	if model.resolutionQuery != "example story" {
+		t.Fatalf("first heavy query = %q", model.resolutionQuery)
+	}
+
+	updated, command := model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Example Tale", URL: "/partial"}}}})
+	model = updated.(Model)
+	if command == nil || model.selectedMedia.URL != "" || model.resolutionQuery != "romaji tale" {
+		t.Fatalf("resolver skipped second heavy title: query %q media %#v score %.3f", model.resolutionQuery, model.selectedMedia, model.resolutionBestScore)
+	}
+}
+
+func TestTrackedResolutionSearchesRegisteredTitleVariantsInOrder(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.selectedSource = catalog.Source{ID: "source", Type: "anime"}
+	model.prepareResolutionSearches(anilist.Entry{
+		MediaID: 42, Title: "Preferred", EnglishTitle: "English", RomajiTitle: "Romaji", NativeTitle: "原題",
+		Synonyms: []string{"Alias One", "Alias Two", "Alias Three", "Ignored Alias"},
+	})
+
+	queries := make([]string, 0)
+	for _, search := range model.resolutionSearches {
+		if !search.heavy {
+			queries = append(queries, search.query)
+		}
+	}
+	want := []string{"Preferred", "English", "Romaji", "原題", "Alias One", "Alias Two", "Alias Three"}
+	if strings.Join(queries, "|") != strings.Join(want, "|") {
+		t.Fatalf("resolution queries = %#v, want %#v", queries, want)
+	}
+}
+
+func TestTrackedResolutionFallbackFollowsBestScoringResultSet(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.resolutionTitles = []string{"Target Title"}
+	model.scoreResolutionResults([]catalog.Media{{Title: "Unrelated", URL: "/old-fallback"}})
+	model.scoreResolutionResults([]catalog.Media{
+		{Title: "Target Adjacent", URL: "/new-fallback"},
+		{Title: "Another Result", URL: "/another"},
+	})
+	if len(model.resolutionFallback) == 0 || model.resolutionFallback[0].URL != "/new-fallback" {
+		t.Fatalf("fallback results = %#v", model.resolutionFallback)
+	}
+}
+
+func TestTrackedMangaTargetsNextUnreadChapterWhenTotalIsUnknown(t *testing.T) {
+	t.Parallel()
+	if got := nextMangaChapterTarget(anilist.Entry{Status: "CURRENT", Progress: 6}); got != 7 {
+		t.Fatalf("next chapter = %d, want 7", got)
+	}
+	if got := nextMangaChapterTarget(anilist.Entry{Status: "COMPLETED", Progress: 12, Total: 12}); got != 12 {
+		t.Fatalf("completed chapter = %d, want 12", got)
+	}
+}
+
+func TestMangaChapterListUsesChapterTerminology(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 30
+	model.stage = stageEpisodes
+	model.selectedSource = catalog.Source{Name: "MangaFire", Type: "manga"}
+	model.details = catalog.Media{Title: "Series", Episodes: []catalog.Episode{{
+		EpisodeNumber: "13.4", Name: "Ch. 13.4 - Fighting a Deity",
+	}}}
+	model.setEpisodeItems()
+
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Chapter 13.4") || !strings.Contains(view, "Chapters") || strings.Contains(view, "Episode 13.4") || strings.Contains(view, " › Episodes") {
+		t.Fatalf("manga chapter view uses episode terminology:\n%s", view)
+	}
+}
+
+func TestLeavingReaderClosesActiveSession(t *testing.T) {
+	t.Parallel()
+	reader := &fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}
+	model := New(nil, nil, "", "mpv", WithMangaReader(reader))
+	model.stage = stagePages
+	model.mangaReaderReturnHome = false
+	model.activeMangaSessionID = "active-session"
+	model.mangaReaderSessions["active-session"] = appconfig.MangaReadingEntry{Title: "Series"}
+
+	model.back()
+	if reader.closed != "active-session" || model.stage != stageEpisodes || model.activeMangaSessionID != "" {
+		t.Fatalf("reader cleanup = closed %q stage %d active %q", reader.closed, model.stage, model.activeMangaSessionID)
+	}
+}
+
+func TestOpenedReaderRemainsClosableWhenProgressSaveFails(t *testing.T) {
+	t.Parallel()
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := &fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}
+	model := New(nil, appconfig.NewStore(filepath.Join(blocked, "config.toml")), "", "mpv", WithMangaReader(reader))
+	model.stage = stagePages
+
+	updated, _ := model.update(mangaReaderOpenedMsg{
+		session: mangareader.OpenedSession{ID: "active-session"},
+		entry:   appconfig.MangaReadingEntry{Title: "Series", Page: 1, TotalPages: 10},
+	})
+	model = updated.(Model)
+	if model.err == nil || model.activeMangaSessionID != "active-session" || model.activeMangaReading == nil {
+		t.Fatalf("failed save abandoned reader: err=%v active=%q reading=%#v", model.err, model.activeMangaSessionID, model.activeMangaReading)
+	}
+
+	model.back()
+	if reader.closed != "active-session" {
+		t.Fatalf("reader session was not closable after save failure: %q", reader.closed)
+	}
+}
+
+func TestLateReaderProgressIsIgnoredAfterSessionCloses(t *testing.T) {
+	t.Parallel()
+	reader := &fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}
+	model := New(nil, nil, "", "mpv", WithMangaReader(reader))
+	model.stage = stagePages
+	model.activeMangaSessionID = "closed-session"
+	model.mangaReaderSessions["closed-session"] = appconfig.MangaReadingEntry{Title: "Series"}
+	model.back()
+
+	updated, command := model.update(mangaReaderProgressMsg{event: mangareader.ProgressEvent{
+		SessionID: "closed-session", Page: 2, Total: 10,
+	}})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("reader progress listener was not restarted")
+	}
+	if _, retained := model.pendingMangaProgress["closed-session"]; retained {
+		t.Fatal("late progress from a closed reader was retained")
+	}
+}
+
+func TestResumedMangaReaderReturnsToMangaHome(t *testing.T) {
+	t.Parallel()
+	reader := &fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}
+	model := New(nil, nil, "", "mpv", WithMangaReader(reader))
+	model.homeType = "manga"
+	model.stage = stagePages
+	model.mangaReaderReturnHome = true
+	model.activeMangaSessionID = "resume-session"
+	model.mangaReaderSessions["resume-session"] = appconfig.MangaReadingEntry{Title: "Series"}
+
+	model.back()
+	if model.stage != stageSources || model.homeType != "manga" || reader.closed != "resume-session" {
+		t.Fatalf("resume return = stage %d type %q closed %q", model.stage, model.homeType, reader.closed)
+	}
+}
+
+func TestReaderStageShowsOnlyCompactProgress(t *testing.T) {
+	t.Parallel()
+	reader := &fakeMangaReader{events: make(chan mangareader.ProgressEvent, 1)}
+	model := New(nil, nil, "", "mpv", WithMangaReader(reader))
+	model.width, model.height = 100, 30
+	model.stage = stagePages
+	model.mangaReaderReturnHome = true
+	model.activeMangaReading = &appconfig.MangaReadingEntry{
+		Title: "Very Long Manga Title", ChapterName: "Chapter 12", Page: 4, TotalPages: 20,
+	}
+
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Page 4/20") || !strings.Contains(view, "esc manga home") {
+		t.Fatalf("reader progress missing compact state:\n%s", view)
+	}
+	for _, excessive := range []string{"Very Long Manga Title\nChapter 12", "direct, ad-free source pages"} {
+		if strings.Contains(view, excessive) {
+			t.Fatalf("reader progress contains excessive detail %q:\n%s", excessive, view)
+		}
 	}
 }
 
@@ -1053,6 +1612,20 @@ func TestCloudflareRecoveryPreservesAutoPlayState(t *testing.T) {
 				t.Fatalf("Cloudflare retry lost autoplay state: stage=%d phase=%d loading=%t command=%v", model.stage, model.autoPlay.phase, model.loading, command)
 			}
 		})
+	}
+}
+
+func TestManualCloudflareRecoveryRetriesMangaPages(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage = stageEpisodes
+	model.loading = false
+	model.selectedSource = catalog.Source{ID: "manga-source", Type: "manga"}
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model = updated.(Model)
+	if model.stage != stageCloudflareCookie || model.cloudflareOperation != cloudflarePages {
+		t.Fatalf("manga recovery = stage %d operation %d", model.stage, model.cloudflareOperation)
 	}
 }
 

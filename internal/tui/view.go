@@ -49,6 +49,9 @@ func (m Model) View() string {
 	case stageDetails:
 		body.WriteString(m.detailsView())
 	case stageEpisodes:
+		if filters := m.chapterScanlatorView(); filters != "" {
+			body.WriteString(filters + "\n\n")
+		}
 		episodes := m.episodeList
 		episodes.SetDelegate(episodeDelegate{loading: m.loading, spinnerView: ansi.Strip(m.spinner.View())})
 		body.WriteString(episodes.View())
@@ -57,7 +60,11 @@ func (m Model) View() string {
 			verb = "resolve streams"
 		}
 		if m.resolvingEpisode != nil {
-			body.WriteString("\n" + helpStyle.Render("󰈈 watched locally • dimmed watched in tracker"))
+			if m.selectedSource.IsAnime() {
+				body.WriteString("\n" + helpStyle.Render("󰈈 watched locally • dimmed watched in tracker"))
+			} else {
+				body.WriteString("\n" + helpStyle.Render("dimmed chapters are read in tracker"))
+			}
 			body.WriteString("\n" + helpStyle.Render("enter "+verb+" • a wrong title • s source • esc details • q quit"))
 		} else {
 			body.WriteString(m.listHelp(verb))
@@ -86,12 +93,31 @@ func (m Model) View() string {
 			body.WriteString(m.listHelp("play with mpv"))
 		}
 	case stagePages:
-		items := make([]string, len(m.pages))
-		for i, page := range m.pages {
-			items[i] = fmt.Sprintf("Page %d  %s", i+1, page.URL)
+		if m.mangaReader != nil {
+			body.WriteString(titleStyle.Render("Browser Reader") + "\n\n")
+			if m.activeMangaReading == nil {
+				body.WriteString(m.spinner.View() + " Opening chapter in your browser…")
+			} else {
+				entry := *m.activeMangaReading
+				body.WriteString(fmt.Sprintf("Page %d/%d", entry.Page, entry.TotalPages))
+			}
+			returnLabel := "chapters"
+			if m.mangaReaderReturnHome {
+				returnLabel = "manga home"
+			}
+			readerHelp := "esc " + returnLabel + " • q quit"
+			if m.activeMangaSessionURL != "" {
+				readerHelp = "ctrl+o reopen browser • " + readerHelp
+			}
+			body.WriteString("\n\n" + helpStyle.Render(readerHelp))
+		} else {
+			items := make([]string, len(m.pages))
+			for i, page := range m.pages {
+				items[i] = fmt.Sprintf("Page %d  %s", i+1, page.URL)
+			}
+			body.WriteString(m.listView(items))
+			body.WriteString("\n" + helpStyle.Render("No browser reader configured • esc chapters • q quit"))
 		}
-		body.WriteString(m.listView(items))
-		body.WriteString("\n" + helpStyle.Render("Page viewer/download support is next • esc episodes • q quit"))
 	case stageRepositories:
 		items := make([]string, len(m.repositories))
 		for i, repo := range m.repositories {
@@ -183,8 +209,12 @@ func (m Model) View() string {
 		body.WriteString(fmt.Sprintf("Type: %s\nStatus: %s\nProgress: %d/%s", entry.Type, entry.Status, entry.Progress, total))
 		body.WriteString("\n\n" + helpStyle.Render("←/→ or -/+ progress • PgUp/PgDn ±10 • tab/s status • enter save • esc cancel"))
 	case stageEpisodeSource:
-		body.WriteString(titleStyle.Render("Choose anime source") + "\n\n")
-		sources := m.animeSources()
+		label := "anime"
+		if m.resolvingEpisode != nil && strings.EqualFold(m.resolvingEpisode.Type, "MANGA") {
+			label = "manga"
+		}
+		body.WriteString(titleStyle.Render("Choose "+label+" source") + "\n\n")
+		sources := m.resolutionSources()
 		items := make([]string, len(sources))
 		for index, source := range sources {
 			active := ""
@@ -296,10 +326,42 @@ func (m Model) sourcesView() string {
 			}
 		}
 	} else {
-		output.WriteString(helpStyle.Render("Manga playback is not available yet. Use Discover to browse installed manga sources.") + "\n")
+		feeds := m.mangaFeeds()
+		for index, feed := range feeds {
+			if index > 0 {
+				output.WriteString("  ")
+			}
+			count := len(m.mangaEntries(feed))
+			if feed == mangaFeedResume {
+				count = len(m.mangaResumeList.Items())
+			}
+			output.WriteString(homeFeedTab(mangaFeedLabel(feed), count, m.mangaFeed == feed))
+		}
+		output.WriteString("\n" + helpStyle.Render("tab/shift+tab or h/l switch feed") + "\n\n")
+		active := m.activeHomeList()
+		if active.SettingFilter() {
+			output.WriteString(active.FilterInput.View() + "\n\n")
+		} else if active.FilterValue() != "" {
+			output.WriteString(helpStyle.Render("Filter: "+active.FilterValue()+"  •  / edit  •  c clear") + "\n\n")
+		}
+		activeList := *active
+		loadingSelection := m.loading && (m.resolvingEpisode != nil || m.pendingMangaReading != nil)
+		activeList.SetDelegate(newEpisodeDelegate(true, loadingSelection, ansi.Strip(m.spinner.View())))
+		if len(activeList.VisibleItems()) == 0 {
+			message := "No manga entries in this feed."
+			if m.mangaFeed == mangaFeedResume {
+				message = "No manga to resume. Open a chapter to start reading history."
+			}
+			if active.FilterValue() != "" {
+				message = "No titles match this filter."
+			}
+			output.WriteString(helpStyle.Render(message) + "\n")
+		} else {
+			output.WriteString(activeList.View())
+		}
 	}
 
-	output.WriteString("\n" + homeHelp(m.homeType == "anime" && m.currentLength() > 0))
+	output.WriteString("\n" + homeHelp(m.currentLength() > 0))
 	return output.String()
 }
 
@@ -309,6 +371,25 @@ func homeFeedTab(label string, count int, active bool) string {
 		return selected.Render(value)
 	}
 	return helpStyle.Render(" " + value + " ")
+}
+
+func (m Model) chapterScanlatorView() string {
+	scanlators := m.chapterScanlators()
+	if len(scanlators) <= 1 {
+		return ""
+	}
+	counts := map[string]int{"": len(m.details.Episodes)}
+	for _, chapter := range m.details.Episodes {
+		if scanlator := strings.TrimSpace(chapter.Scanlator); scanlator != "" {
+			counts[scanlator]++
+		}
+	}
+	tabs := make([]string, 0, len(scanlators))
+	for _, scanlator := range scanlators {
+		tabs = append(tabs, homeFeedTab(firstNonEmpty(scanlator, "All"), counts[scanlator], m.chapterScanlator == scanlator))
+	}
+	return lipgloss.NewStyle().Width(max(32, m.width-8)).Render(
+		strings.Join(tabs, "  ") + "\n" + helpStyle.Render("tab/shift+tab or h/l switch scanlator"))
 }
 
 func homeFeedEmptyMessage(feed homeFocus) string {
@@ -386,16 +467,21 @@ func (m Model) detailsView() string {
 	if len(description) > 1200 {
 		description = description[:1200] + "…"
 	}
+	itemLabel := "Episodes"
+	openLabel := "episodes"
+	if strings.EqualFold(m.selectedSource.Type, "manga") {
+		itemLabel, openLabel = "Chapters", "chapters"
+	}
 	content := titleStyle.Render(m.details.DisplayTitle()) + "\n\n" +
 		lipgloss.NewStyle().Width(max(30, m.width-8)).Render(description) + "\n\n" +
-		fmt.Sprintf("Episodes/chapters: %d", len(m.details.Episodes))
+		fmt.Sprintf("%s: %d", itemLabel, len(m.details.Episodes))
 	if len(m.details.Genres) > 0 {
 		content += "\nGenres: " + strings.Join(m.details.Genres, ", ")
 	}
 	if m.resolvingEpisode != nil {
-		content += "\n\n" + helpStyle.Render("enter episodes • a wrong title • s source • esc matches • q quit")
+		content += "\n\n" + helpStyle.Render("enter "+openLabel+" • a wrong title • s source • esc matches • q quit")
 	} else {
-		content += "\n\n" + helpStyle.Render("enter episodes/chapters • esc results • q quit")
+		content += "\n\n" + helpStyle.Render("enter "+openLabel+" • esc results • q quit")
 	}
 	return content
 }
@@ -457,7 +543,11 @@ func (m Model) breadcrumb() string {
 		if m.stage == stageAlternativeTitle {
 			label = "Alternative title"
 		}
-		return strings.Join([]string{"Home", "New Episodes", label}, " › ")
+		mediaType := "Anime"
+		if m.resolvingEpisode != nil && strings.EqualFold(m.resolvingEpisode.Type, "MANGA") {
+			mediaType = "Manga"
+		}
+		return strings.Join([]string{"Home", mediaType, label}, " › ")
 	}
 	if m.stage == stageAniListToken || m.stage == stageAniListLibrary || m.stage == stageAniListEdit {
 		parts := []string{"Home", "AniList"}
@@ -494,7 +584,11 @@ func (m Model) breadcrumb() string {
 		parts = append(parts, m.details.DisplayTitle())
 	}
 	if contentStage >= stageEpisodes {
-		parts = append(parts, "Episodes")
+		if strings.EqualFold(m.selectedSource.Type, "manga") {
+			parts = append(parts, "Chapters")
+		} else {
+			parts = append(parts, "Episodes")
+		}
 	}
 	if contentStage == stageStreams {
 		parts = append(parts, "Streams")

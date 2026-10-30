@@ -187,13 +187,14 @@ a text field for the complete categorized shortcut reference.
 | -------------------------------------- | ---------------------------------------------------- |
 | `1` / `2`                              | Switch between Anime and Manga                       |
 | `h` / `l`, `Tab`, `←` / `→`            | Switch Home feeds                                    |
+| `Tab` / `Shift+Tab`, `h` / `l`, `←` / `→` | Switch scanlator in the Manga chapter list          |
 | `/` / `c`                              | Filter the active Home feed / clear its filter       |
 | `d`                                    | Open Discover and search with an installed source    |
 | `t`                                    | Connect or manage AniList tracking                   |
 | `r`                                    | Manage extension repositories                        |
 | `space`                                | Toggle **Remember server** on the stream screen      |
 | `a` / `s`                              | Search an alternative title / change source          |
-| `Ctrl+O`                               | Open the source domain or AniList authorization page |
+| `Ctrl+O`                               | Reopen reader / open source or AniList authorization |
 | `c`                                    | Start Cloudflare recovery manually                   |
 | `x`                                    | Sign out of AniList from the library screen          |
 
@@ -207,6 +208,30 @@ with `CURRENT` status. A title may intentionally appear in both New Episodes and
 Watching, matching AnymeX. Finished shows drop off New Episodes after seven
 days.
 
+The Manga Home uses **Resume**, **Reading**, **Completed**, **Paused**,
+**Dropped**, **Planning**, **Rereading**, and **All** feeds. Tracker-status feeds
+come from AniList and empty status feeds stay hidden. Resume is local reading
+history: it records the exact chapter and visible page and reopens there after a
+restart. AniList does not provide reliable chapter-release data, so Manga Home
+does not fabricate a New Chapters feed.
+
+Manga chapter lists show **All** plus the source's scanlator groups, such as
+**official** and **unofficial** on MangaFire. Use `Tab` / `Shift+Tab`, `h` / `l`,
+or the left/right arrows to switch groups. Rows label the version, and **All**
+keeps every release available. The filter starts at All for each new title or
+source and stays selected when returning from the reader. Resume retains the
+chosen chapter version and page.
+
+Selecting a chapter opens an ad-free reader in the system browser. AnimiX serves
+the reader only on `127.0.0.1`, proxies the extension's required image headers,
+and renders the source's direct full-resolution pages in a continuous fit-width
+layout. The title and page controls hide while scrolling down and return when
+scrolling up or moving the pointer to the top. Arrow keys, `j`/`k`, Space, Page
+Up/Down, Home, and End scroll the reader. Image loading preserves the current
+page's position as its layout settles. Press `Ctrl+O` on the terminal's Browser
+Reader screen to reopen the tab at the latest saved page. Returning to the
+chapter list closes the browser-reader session and its loopback listener.
+
 - Selecting a New Episodes card searches with the remembered anime source,
   opens the closest match automatically, and highlights the next unwatched
   episode.
@@ -214,6 +239,12 @@ days.
   still selectable, `󰈈` marks local completion, and provider episode titles
   appear on the second line when available.
 - Source and title mappings are remembered per AniList media ID.
+- Tracked Anime and Manga resolution tries the saved mapping, AniList preferred,
+  English, Romaji, native, and synonym titles, then normalized variants before
+  using the source's best available fallback. An exact English, Romaji, native,
+  preferred, or synonym match always wins over a saved mapping, so a stale
+  mapping is repaired automatically. Low-confidence fallbacks are never saved as
+  mappings.
 - Local mpv history stays separate from AniList. **Resume Watching** shows the
   newest incomplete playback first, records final position and duration when
   mpv exits, and hides episodes at least 90% complete. AniList-linked entries
@@ -370,11 +401,12 @@ go vet ./...
 - Extension APK download and bridge-based desktop JAR conversion
 - Search, details, and episodes/chapters
 - Stream resolution and mpv playback
-- Manga page URL resolution
+- Local Manga Resume with exact chapter/page restoration
+- Ad-free system-browser manga reader with header-aware image proxying
 - AniList anime/manga library and tracking updates
 
 MAL/Simkl tracking, CloudStream repository management, media downloads, and an
-integrated manga reader are not implemented yet.
+embedded terminal manga reader are not implemented yet.
 
 ## 🐛 Issues & Ideas
 

@@ -13,8 +13,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/itsmenewbie03/animix/internal/bridge"
+	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
+	"github.com/itsmenewbie03/animix/internal/mangareader"
 	anyruntime "github.com/itsmenewbie03/animix/internal/runtime"
 	"github.com/itsmenewbie03/animix/internal/tui"
 	appupdate "github.com/itsmenewbie03/animix/internal/update"
@@ -108,6 +110,8 @@ func main() {
 	}
 	defer client.Close()
 	service := catalog.NewService(client)
+	reader := mangareader.New(browser.Open)
+	defer reader.Close()
 
 	if *diagnose {
 		diagnosticContext, diagnosticCancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -126,6 +130,7 @@ func main() {
 	options := []tui.Option{
 		tui.WithAutoPlayNextEpisode(config.AutoPlayNextEpisode),
 		tui.WithResumeAniListSync(config.ResumeSyncMode()),
+		tui.WithMangaReader(reader),
 	}
 	if config.UpdatesEnabled() {
 		options = append(options, tui.WithUpdateCheck(appupdate.NewClient(), version))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
+	"github.com/itsmenewbie03/animix/internal/mangareader"
 	"github.com/itsmenewbie03/animix/internal/notification"
 	"github.com/itsmenewbie03/animix/internal/player"
 	"github.com/itsmenewbie03/animix/internal/repository"
@@ -79,89 +81,141 @@ const (
 	homeFocusContinueWatching
 )
 
+type mangaFeed string
+
+const (
+	mangaFeedResume    mangaFeed = "RESUME"
+	mangaFeedReading   mangaFeed = "CURRENT"
+	mangaFeedCompleted mangaFeed = "COMPLETED"
+	mangaFeedPaused    mangaFeed = "PAUSED"
+	mangaFeedDropped   mangaFeed = "DROPPED"
+	mangaFeedPlanning  mangaFeed = "PLANNING"
+	mangaFeedRereading mangaFeed = "REPEATING"
+	mangaFeedAll       mangaFeed = "ALL"
+)
+
 type Model struct {
-	service              *catalog.Service
-	configStore          *appconfig.Store
-	repositoryClient     *repository.Client
-	installer            *repository.Installer
-	anilistClient        *anilist.Client
-	aniskipClient        *aniskip.Client
-	extensionDirectory   string
-	player               string
-	stage                stage
-	homeType             string
-	homeFocus            homeFocus
-	showKeyHelp          bool
-	keyHelpScroll        int
-	pendingTopKey        bool
-	width                int
-	height               int
-	cursor               int
-	loading              bool
-	err                  error
-	status               string
-	statusTitle          string
-	spinner              spinner.Model
-	updateProgress       progress.Model
-	search               textinput.Model
-	repositoryInput      textinput.Model
-	extensionSearch      textinput.Model
-	tokenInput           textinput.Model
-	alternativeTitle     textinput.Model
-	cookieInput          textinput.Model
-	userAgentInput       textinput.Model
-	sources              []catalog.Source
-	results              []catalog.Media
-	details              catalog.Media
-	videos               []catalog.Video
-	pages                []catalog.Page
-	selectedSource       catalog.Source
-	selectedMedia        catalog.Media
-	selectedEpisode      catalog.Episode
-	repositories         []appconfig.Repository
-	availableExtensions  []repository.Extension
-	selectedRepository   appconfig.Repository
-	pendingRepositoryURL string
-	extensionQuery       string
-	extensionLanguage    string
-	anilistToken         string
-	viewer               anilist.Viewer
-	trackingEntries      []anilist.Entry
-	continueWatching     []appconfig.ContinueEntry
-	activeSources        map[string]string
-	mediaMappings        []appconfig.MediaMapping
-	sourceCredentials    []appconfig.SourceCredential
-	streamPreferences    []appconfig.StreamPreference
-	newEpisodesList      list.Model
-	resumeWatchingList   list.Model
-	continueWatchingList list.Model
-	episodeList          list.Model
-	editingEntry         anilist.Entry
-	resolvingEpisode     *anilist.Entry
-	manualMapping        bool
-	resolutionQuery      string
-	cloudflareOperation  cloudflareOperation
-	cloudflareReturn     stage
-	rememberStream       bool
-	playbackReturnHome   bool
-	pendingPlayback      *appconfig.ContinueEntry
-	autoPlayNextEpisode  *bool
-	resumeAniListSync    appconfig.ResumeAniListSyncMode
-	autoPlay             autoPlayState
-	malID                int
-	updateService        UpdateService
-	currentVersion       string
-	availableUpdate      appupdate.Release
-	updateReturn         stage
-	notifier             notification.Model
-	updateEvents         chan updateEventMsg
-	updateState          appupdate.ProbeProgress
-	updatePercent        float64
+	service               *catalog.Service
+	configStore           *appconfig.Store
+	repositoryClient      *repository.Client
+	installer             *repository.Installer
+	anilistClient         *anilist.Client
+	aniskipClient         *aniskip.Client
+	extensionDirectory    string
+	player                string
+	mangaReader           MangaReader
+	stage                 stage
+	homeType              string
+	homeFocus             homeFocus
+	mangaFeed             mangaFeed
+	showKeyHelp           bool
+	keyHelpScroll         int
+	pendingTopKey         bool
+	width                 int
+	height                int
+	cursor                int
+	loading               bool
+	err                   error
+	status                string
+	statusTitle           string
+	spinner               spinner.Model
+	updateProgress        progress.Model
+	search                textinput.Model
+	repositoryInput       textinput.Model
+	extensionSearch       textinput.Model
+	tokenInput            textinput.Model
+	alternativeTitle      textinput.Model
+	cookieInput           textinput.Model
+	userAgentInput        textinput.Model
+	sources               []catalog.Source
+	results               []catalog.Media
+	details               catalog.Media
+	videos                []catalog.Video
+	pages                 []catalog.Page
+	selectedSource        catalog.Source
+	selectedMedia         catalog.Media
+	selectedEpisode       catalog.Episode
+	repositories          []appconfig.Repository
+	availableExtensions   []repository.Extension
+	selectedRepository    appconfig.Repository
+	pendingRepositoryURL  string
+	extensionQuery        string
+	extensionLanguage     string
+	anilistToken          string
+	viewer                anilist.Viewer
+	trackingEntries       []anilist.Entry
+	continueWatching      []appconfig.ContinueEntry
+	mangaReading          []appconfig.MangaReadingEntry
+	pendingMangaReading   *appconfig.MangaReadingEntry
+	activeMangaReading    *appconfig.MangaReadingEntry
+	activeMangaSessionID  string
+	activeMangaSessionURL string
+	mangaReaderReturnHome bool
+	mangaReaderSessions   map[string]appconfig.MangaReadingEntry
+	pendingMangaProgress  map[string]mangareader.ProgressEvent
+	activeSources         map[string]string
+	mediaMappings         []appconfig.MediaMapping
+	sourceCredentials     []appconfig.SourceCredential
+	streamPreferences     []appconfig.StreamPreference
+	newEpisodesList       list.Model
+	resumeWatchingList    list.Model
+	continueWatchingList  list.Model
+	mangaResumeList       list.Model
+	mangaTrackingList     list.Model
+	episodeList           list.Model
+	chapterScanlator      string
+	editingEntry          anilist.Entry
+	resolvingEpisode      *anilist.Entry
+	manualMapping         bool
+	resolutionQuery       string
+	resolutionTitles      []string
+	resolutionSearches    []resolutionSearch
+	resolutionSearchIndex int
+	resolutionSavedTitle  string
+	resolutionSavedMedia  catalog.Media
+	resolutionHasSaved    bool
+	resolutionVerifyLeft  int
+	resolutionExactMedia  catalog.Media
+	resolutionHasExact    bool
+	resolutionBest        catalog.Media
+	resolutionBestScore   float64
+	resolutionHasBest     bool
+	resolutionFallback    []catalog.Media
+	cloudflareOperation   cloudflareOperation
+	cloudflareReturn      stage
+	rememberStream        bool
+	playbackReturnHome    bool
+	pendingPlayback       *appconfig.ContinueEntry
+	autoPlayNextEpisode   *bool
+	resumeAniListSync     appconfig.ResumeAniListSyncMode
+	autoPlay              autoPlayState
+	malID                 int
+	updateService         UpdateService
+	currentVersion        string
+	availableUpdate       appupdate.Release
+	updateReturn          stage
+	notifier              notification.Model
+	updateEvents          chan updateEventMsg
+	updateState           appupdate.ProbeProgress
+	updatePercent         float64
 }
 
 type UpdateService interface {
 	Check(context.Context, string) (appupdate.Release, error)
 	InstallWithProgress(context.Context, appupdate.Release, func(appupdate.ProbeProgress)) error
+}
+
+type resolutionSearch struct {
+	query        string
+	saved        bool
+	heavy        bool
+	heavyAttempt int
+}
+
+type MangaReader interface {
+	Open(mangareader.Session) (mangareader.OpenedSession, error)
+	Events() <-chan mangareader.ProgressEvent
+	CloseSession(string) error
 }
 
 type Option func(*Model)
@@ -188,6 +242,10 @@ func WithResumeAniListSync(mode appconfig.ResumeAniListSyncMode) Option {
 	return func(model *Model) {
 		model.resumeAniListSync = mode
 	}
+}
+
+func WithMangaReader(reader MangaReader) Option {
+	return func(model *Model) { model.mangaReader = reader }
 }
 
 type newEpisodeListItem struct {
@@ -225,6 +283,39 @@ func (item continueWatchingListItem) Description() string {
 
 func (item continueWatchingListItem) FilterValue() string { return item.entry.Title }
 
+type mangaTrackingListItem struct{ entry anilist.Entry }
+
+func (item mangaTrackingListItem) Title() string { return item.entry.Title }
+
+func (item mangaTrackingListItem) Description() string {
+	total := "?"
+	if item.entry.Total > 0 {
+		total = fmt.Sprint(item.entry.Total)
+	}
+	return fmt.Sprintf("%s  •  Chapters %d/%s", mangaStatusLabel(item.entry.Status), item.entry.Progress, total)
+}
+
+func (item mangaTrackingListItem) FilterValue() string { return item.entry.Title }
+
+type mangaResumeListItem struct{ entry appconfig.MangaReadingEntry }
+
+func (item mangaResumeListItem) Title() string { return item.entry.Title }
+
+func (item mangaResumeListItem) Description() string {
+	chapter := continueEpisodeLabel(item.entry.ChapterNumber, item.entry.ChapterName)
+	chapter = strings.TrimPrefix(chapter, "Episode ")
+	chapter = strings.TrimPrefix(chapter, "EP ")
+	if !strings.HasPrefix(strings.ToLower(chapter), "chapter ") {
+		chapter = "Chapter " + chapter
+	}
+	if scanlator := strings.TrimSpace(item.entry.ChapterScanlator); scanlator != "" {
+		chapter += "  •  " + scanlator
+	}
+	return fmt.Sprintf("%s  •  Page %d/%d", chapter, item.entry.Page, item.entry.TotalPages)
+}
+
+func (item mangaResumeListItem) FilterValue() string { return item.entry.Title }
+
 type resumeWatchingListItem struct {
 	entry appconfig.ContinueEntry
 }
@@ -244,15 +335,22 @@ func (item resumeWatchingListItem) FilterValue() string { return item.entry.Titl
 type episodeListItem struct {
 	episode        catalog.Episode
 	seriesTitle    string
+	manga          bool
 	aniListWatched bool
 	localWatched   bool
 }
 
 func (item episodeListItem) Title() string {
+	if item.manga {
+		return chapterPrimaryLabel(item.episode)
+	}
 	return episodePrimaryLabel(item.episode)
 }
 
 func (item episodeListItem) Description() string {
+	if item.manga {
+		return chapterSubtitle(item.episode, item.seriesTitle)
+	}
 	return episodeSubtitle(item.episode, item.seriesTitle)
 }
 
@@ -286,6 +384,14 @@ type pagesMsg struct {
 	err   error
 }
 
+type mangaReaderOpenedMsg struct {
+	session mangareader.OpenedSession
+	entry   appconfig.MangaReadingEntry
+	err     error
+}
+
+type mangaReaderProgressMsg struct{ event mangareader.ProgressEvent }
+
 type playerFinishedMsg struct {
 	err      error
 	progress *player.Progress
@@ -296,6 +402,7 @@ type repositoriesMsg struct {
 	items             []appconfig.Repository
 	token             string
 	continueWatching  []appconfig.ContinueEntry
+	mangaReading      []appconfig.MangaReadingEntry
 	activeSources     map[string]string
 	mediaMappings     []appconfig.MediaMapping
 	sourceCredentials []appconfig.SourceCredential
@@ -341,8 +448,11 @@ type aniListPlaybackUpdatedMsg struct {
 }
 
 type (
-	aniListLogoutMsg     struct{ err error }
-	browserOpenedMsg     struct{ err error }
+	aniListLogoutMsg struct{ err error }
+	browserOpenedMsg struct {
+		err         error
+		mangaReader bool
+	}
 	credentialsLoadedMsg struct{ err error }
 	updateCheckedMsg     struct {
 		release appupdate.Release
@@ -440,6 +550,26 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	resumeWatching.SetShowPagination(false)
 	resumeWatching.DisableQuitKeybindings()
 	resumeWatching.FilterInput.PromptStyle = filterPromptStyle
+	mangaResume := list.New(nil, newEpisodeDelegate(false, false, ""), 60, 8)
+	mangaResume.SetShowTitle(false)
+	mangaResume.SetShowStatusBar(false)
+	mangaResume.SetFilteringEnabled(true)
+	mangaResume.SetShowFilter(false)
+	mangaResume.Filter = list.UnsortedFilter
+	mangaResume.SetShowHelp(false)
+	mangaResume.SetShowPagination(false)
+	mangaResume.DisableQuitKeybindings()
+	mangaResume.FilterInput.PromptStyle = filterPromptStyle
+	mangaTracking := list.New(nil, newEpisodeDelegate(false, false, ""), 60, 8)
+	mangaTracking.SetShowTitle(false)
+	mangaTracking.SetShowStatusBar(false)
+	mangaTracking.SetFilteringEnabled(true)
+	mangaTracking.SetShowFilter(false)
+	mangaTracking.Filter = list.UnsortedFilter
+	mangaTracking.SetShowHelp(false)
+	mangaTracking.SetShowPagination(false)
+	mangaTracking.DisableQuitKeybindings()
+	mangaTracking.FilterInput.PromptStyle = filterPromptStyle
 	episodes := list.New(nil, episodeDelegate{loading: false}, 60, 12)
 	episodes.SetShowTitle(false)
 	episodes.SetShowStatusBar(false)
@@ -458,6 +588,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		stage:                stageSources,
 		homeType:             "anime",
 		homeFocus:            homeFocusNone,
+		mangaFeed:            mangaFeedResume,
 		resumeAniListSync:    appconfig.ResumeAniListSyncFilter,
 		loading:              true,
 		spinner:              spin,
@@ -473,6 +604,10 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		newEpisodesList:      newEpisodes,
 		resumeWatchingList:   resumeWatching,
 		continueWatchingList: continueWatching,
+		mangaResumeList:      mangaResume,
+		mangaTrackingList:    mangaTracking,
+		mangaReaderSessions:  make(map[string]appconfig.MangaReadingEntry),
+		pendingMangaProgress: make(map[string]mangareader.ProgressEvent),
 		episodeList:          episodes,
 	}
 	for _, option := range options {
@@ -485,6 +620,9 @@ func (m Model) Init() tea.Cmd {
 	commands := []tea.Cmd{m.spinner.Tick, m.loadRepositories()}
 	if m.updateService != nil {
 		commands = append(commands, m.checkForUpdates())
+	}
+	if m.mangaReader != nil {
+		commands = append(commands, m.waitForMangaReaderProgress())
 	}
 	return tea.Batch(commands...)
 }
@@ -513,6 +651,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeNewEpisodesList()
 		m.resizeResumeWatchingList()
 		m.resizeContinueWatchingList()
+		m.resizeMangaLists()
 		m.resizeEpisodeList()
 		return m, nil
 	case spinner.TickMsg:
@@ -524,7 +663,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateProgress = progressModel.(progress.Model)
 		return m, cmd
 	case list.FilterMatchesMsg:
-		if m.stage == stageSources && m.homeType == "anime" {
+		if m.stage == stageSources {
 			if active := m.activeHomeList(); active != nil {
 				updated, cmd := active.Update(msg)
 				*active = updated
@@ -542,27 +681,55 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflareSearch)
 			}
+			if m.resolvingEpisode != nil && !m.manualMapping && m.resolutionHasSaved {
+				return m.acceptResolvedMedia(m.resolutionSavedMedia)
+			}
 			return m, nil
 		}
 		m.results = msg.pages.List
 		if m.resolvingEpisode != nil {
-			if len(m.results) == 0 {
-				m.stage = stageAlternativeTitle
-				m.alternativeTitle.SetValue(m.resolutionQuery)
-				m.alternativeTitle.Focus()
-				m.err = fmt.Errorf("no match found in %s; try an alternative title", m.selectedSource.Name)
-				return m, textinput.Blink
-			}
 			if m.manualMapping {
+				if len(m.results) == 0 {
+					return m.openAlternativeTitle()
+				}
 				m.stage, m.cursor = stageResults, 0
 				m.status = "Select the correct match from " + m.selectedSource.Name
 				return m, nil
 			}
-			m.cursor = bestMediaMatch(m.resolutionQuery, m.results)
-			m.selectedMedia = m.results[m.cursor]
-			m.loading = true
-			m.status = ""
-			return m, tea.Batch(m.spinner.Tick, m.loadDetails())
+			if len(m.resolutionSearches) == 0 {
+				m.prepareResolutionSearches(*m.resolvingEpisode)
+			}
+			if len(m.resolutionSearches) == 0 {
+				return m.openAlternativeTitle()
+			}
+			m.scoreResolutionResults(m.results)
+			if m.resolutionHasExact {
+				return m.acceptResolvedMedia(m.resolutionExactMedia)
+			}
+			if m.resolutionHasSaved {
+				// A saved mapping may be stale, so verify the AniList title
+				// variants before trusting it again.
+				if m.resolutionVerifyLeft > 0 && m.advanceResolutionSearch() {
+					m.resolutionVerifyLeft--
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQuery))
+				}
+				return m.acceptResolvedMedia(m.resolutionSavedMedia)
+			}
+			if m.resolutionHasBest && m.resolutionBestScore >= 0.96 {
+				return m.acceptResolvedMedia(m.resolutionBest)
+			}
+			if m.advanceResolutionSearch() {
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQuery))
+			}
+			if m.resolutionHasBest && m.resolutionBestScore >= 0.7 {
+				return m.acceptResolvedMedia(m.resolutionBest)
+			}
+			if len(m.resolutionFallback) > 0 {
+				return m.acceptResolvedMedia(m.resolutionFallback[0])
+			}
+			return m.openAlternativeTitle()
 		}
 		m.stage, m.cursor = stageResults, 0
 		return m, nil
@@ -579,24 +746,33 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.details = msg.media
+		m.chapterScanlator = ""
 		m.malID = msg.malID
 		if m.autoPlay.phase == autoPlayLoadingDetails {
 			return m.resolveAutoPlayNext()
 		}
 		if m.resolvingEpisode != nil {
-			mapping := appconfig.MediaMapping{
-				MediaID: m.resolvingEpisode.MediaID, SourceID: m.selectedSource.ID,
-				Title: m.selectedMedia.DisplayTitle(),
-			}
-			if m.configStore != nil {
-				if err := m.configStore.SaveMediaMapping(mapping); err != nil {
-					m.err = fmt.Errorf("save media mapping: %w", err)
+			// Only remember a mapping when the match is trustworthy; a
+			// low-confidence fallback must not poison later resolutions.
+			if m.manualMapping || m.resolutionHasExact || m.resolutionHasSaved || m.resolutionBestScore >= 0.7 {
+				mapping := appconfig.MediaMapping{
+					MediaID: m.resolvingEpisode.MediaID, SourceID: m.selectedSource.ID,
+					Title: m.selectedMedia.DisplayTitle(),
 				}
+				if m.configStore != nil {
+					if err := m.configStore.SaveMediaMapping(mapping); err != nil {
+						m.err = fmt.Errorf("save media mapping: %w", err)
+					}
+				}
+				m.mediaMappings = prependMediaMapping(m.mediaMappings, mapping)
 			}
-			m.mediaMappings = prependMediaMapping(m.mediaMappings, mapping)
 			m.stage = stageEpisodes
 			m.setEpisodeItems()
-			m.cursor = episodeCursor(m.details.Episodes, nextEpisodeTargetWithLocal(*m.resolvingEpisode, m.localWatchedEpisodes()))
+			target := nextEpisodeTargetWithLocal(*m.resolvingEpisode, m.localWatchedEpisodes())
+			if !m.selectedSource.IsAnime() {
+				target = nextMangaChapterTarget(*m.resolvingEpisode)
+			}
+			m.cursor = episodeCursor(m.details.Episodes, target)
 			m.episodeList.Select(m.cursor)
 			return m, nil
 		}
@@ -663,11 +839,68 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflarePages)
 			}
+			m.pendingMangaReading = nil
 			return m, nil
 		}
 		m.pages = msg.items
 		m.stage, m.cursor = stagePages, 0
+		if m.pendingMangaReading != nil {
+			entry := *m.pendingMangaReading
+			m.pendingMangaReading = nil
+			if m.mangaReader != nil {
+				m.loading = true
+				return m, m.openMangaReader(entry, msg.items)
+			}
+		}
 		return m, nil
+	case mangaReaderOpenedMsg:
+		m.loading, m.err = false, msg.err
+		if msg.err == nil {
+			entry := msg.entry
+			if event, ok := m.pendingMangaProgress[msg.session.ID]; ok {
+				entry.Page, entry.TotalPages = event.Page, event.Total
+				delete(m.pendingMangaProgress, msg.session.ID)
+			}
+			entry.UpdatedAt = time.Now().UnixMilli()
+			m.mangaReaderSessions[msg.session.ID] = entry
+			m.activeMangaSessionID = msg.session.ID
+			m.activeMangaSessionURL = msg.session.URL
+			m.activeMangaReading = &entry
+			m.mangaReading = prependMangaReading(m.mangaReading, entry)
+			m.refreshMangaHome()
+			m.status = ""
+			if m.configStore != nil {
+				if err := m.configStore.SaveMangaReading(entry); err != nil {
+					m.err = fmt.Errorf("save manga reading progress: %w", err)
+				}
+			}
+			return m, m.notifier.Notify(notification.Notice{
+				Title:   "Chapter ready",
+				Message: "Read it in your browser.",
+				Level:   notification.Success,
+			})
+		}
+		return m, nil
+	case mangaReaderProgressMsg:
+		entry, ok := m.mangaReaderSessions[msg.event.SessionID]
+		if !ok {
+			if m.loading && m.stage == stagePages {
+				m.pendingMangaProgress[msg.event.SessionID] = msg.event
+			}
+			return m, m.waitForMangaReaderProgress()
+		}
+		entry.Page, entry.TotalPages = msg.event.Page, msg.event.Total
+		entry.UpdatedAt = time.Now().UnixMilli()
+		m.mangaReaderSessions[msg.event.SessionID] = entry
+		m.activeMangaReading = &entry
+		m.mangaReading = prependMangaReading(m.mangaReading, entry)
+		m.refreshMangaHome()
+		if m.configStore != nil {
+			if err := m.configStore.SaveMangaReading(entry); err != nil {
+				m.err = fmt.Errorf("save manga reading progress: %w", err)
+			}
+		}
+		return m, m.waitForMangaReaderProgress()
 	case playerFinishedMsg:
 		var syncCommand, notificationCommand tea.Cmd
 		if msg.err != nil {
@@ -741,10 +974,12 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.repositories = msg.items
 			m.anilistToken = msg.token
 			m.continueWatching = msg.continueWatching
+			m.mangaReading = msg.mangaReading
 			sort.SliceStable(m.continueWatching, func(i, j int) bool {
 				return m.continueWatching[i].UpdatedAt > m.continueWatching[j].UpdatedAt
 			})
 			m.refreshResumeWatching()
+			m.refreshMangaHome()
 			m.activeSources = msg.activeSources
 			m.mediaMappings = msg.mediaMappings
 			m.sourceCredentials = msg.sourceCredentials
@@ -808,6 +1043,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshResumeWatching()
 			m.refreshNewEpisodes(time.Now())
 			m.refreshContinueWatching()
+			m.refreshMangaHome()
 			if msg.open {
 				m.stage, m.cursor = stageAniListLibrary, 0
 			}
@@ -831,6 +1067,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshResumeWatching()
 			m.refreshNewEpisodes(time.Now())
 			m.refreshContinueWatching()
+			m.refreshMangaHome()
 			m.stage = stageAniListLibrary
 		}
 		return m, nil
@@ -893,6 +1130,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.trackingEntries = nil
 			m.refreshNewEpisodes(time.Now())
 			m.refreshContinueWatching()
+			m.refreshMangaHome()
 			m.viewer = anilist.Viewer{}
 			m.stage, m.cursor = stageSources, 0
 			m.status = "Signed out of AniList"
@@ -901,7 +1139,9 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case browserOpenedMsg:
 		m.err = msg.err
 		if msg.err == nil {
-			if m.stage == stageCloudflareCookie || m.stage == stageCloudflareUserAgent {
+			if msg.mangaReader {
+				m.status = "Chapter opened in your browser"
+			} else if m.stage == stageCloudflareCookie || m.stage == stageCloudflareUserAgent {
 				m.status = "Source domain opened in your browser"
 			} else {
 				m.status = "AniList authorization opened in your browser"
@@ -1036,7 +1276,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.loading {
 		return m, nil
 	}
-	if m.stage == stageSources && m.homeType == "anime" {
+	if m.stage == stageSources {
 		if active := m.activeHomeList(); active != nil && active.SettingFilter() {
 			return m, m.updateHomeFilter(key)
 		}
@@ -1285,6 +1525,13 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.back()
 		return m, nil
+	case "ctrl+o":
+		if m.stage == stagePages && m.activeMangaSessionURL != "" {
+			url := m.activeMangaSessionURL
+			return m, func() tea.Msg {
+				return browserOpenedMsg{err: browser.Open(url), mangaReader: true}
+			}
+		}
 	case "up", "k":
 		if m.stage == stageSources {
 			if active := m.activeHomeList(); active != nil {
@@ -1338,6 +1585,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.normalizeHomeFocus()
 			} else {
 				m.homeFocus = homeFocusNone
+				m.normalizeMangaFeed()
+				m.refreshMangaTrackingList()
 			}
 			return m, nil
 		}
@@ -1346,11 +1595,18 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			return m, nil
 		}
+		if m.stage == stageEpisodes {
+			switch key.String() {
+			case "tab", "right", "l":
+				m.cycleChapterScanlator(1)
+			case "shift+tab", "left", "h":
+				m.cycleChapterScanlator(-1)
+			}
+			return m, nil
+		}
 	case "/":
 		if m.stage == stageSources {
-			if m.homeType == "anime" {
-				return m, m.beginHomeFilter()
-			}
+			return m, m.beginHomeFilter()
 		}
 		if m.stage == stageAvailableExtensions {
 			m.stage = stageExtensionSearch
@@ -1359,7 +1615,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		}
 	case "c":
-		if m.stage == stageSources && m.homeType == "anime" && m.homeFilterActive() {
+		if m.stage == stageSources && m.homeFilterActive() {
 			m.clearHomeFilter()
 			return m, nil
 		}
@@ -1372,7 +1628,13 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch m.stage {
 			case stageResults, stageDetails:
 				operation = cloudflareDetails
-			case stageEpisodes, stageStreams:
+			case stageEpisodes:
+				if m.selectedSource.IsAnime() {
+					operation = cloudflareVideos
+				} else {
+					operation = cloudflarePages
+				}
+			case stageStreams:
 				operation = cloudflareVideos
 			}
 			return m.beginCloudflareRecovery(operation)
@@ -1435,7 +1697,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		if (m.stage == stageEpisodes || m.stage == stageDetails || m.stage == stageResults) && m.resolvingEpisode != nil {
 			m.stage, m.cursor, m.err, m.status = stageEpisodeSource, 0, nil, ""
-			for index, source := range m.animeSources() {
+			for index, source := range m.resolutionSources() {
 				if source.ID == m.selectedSource.ID {
 					m.cursor = index
 					break
@@ -1462,7 +1724,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) acceptsTextInput() bool {
-	if m.stage == stageSources && m.homeType == "anime" {
+	if m.stage == stageSources {
 		if active := m.activeHomeList(); active != nil && active.SettingFilter() {
 			return true
 		}
@@ -1485,6 +1747,20 @@ func openAniListAuthorization() tea.Cmd {
 func (m Model) activate() (tea.Model, tea.Cmd) {
 	switch m.stage {
 	case stageSources:
+		if m.homeType == "manga" {
+			if m.mangaFeed == mangaFeedResume {
+				selected, ok := m.mangaResumeList.SelectedItem().(mangaResumeListItem)
+				if ok {
+					return m.resumeManga(selected.entry)
+				}
+				return m, nil
+			}
+			selected, ok := m.mangaTrackingList.SelectedItem().(mangaTrackingListItem)
+			if ok {
+				return m.activateTrackedManga(selected.entry)
+			}
+			return m, nil
+		}
 		if m.homeFocus == homeFocusResumeWatching && m.homeType == "anime" {
 			selected, ok := m.resumeWatchingList.SelectedItem().(resumeWatchingListItem)
 			if ok {
@@ -1521,14 +1797,14 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		m.loading, m.err = true, nil
 		return m, tea.Batch(m.spinner.Tick, m.loadDetails())
 	case stageEpisodeSource:
-		sources := m.animeSources()
+		sources := m.resolutionSources()
 		if len(sources) == 0 || m.resolvingEpisode == nil {
 			return m, nil
 		}
 		m.selectedSource = sources[m.cursor]
 		m.rememberActiveSource(m.selectedSource)
 		m.manualMapping = false
-		m.resolutionQuery = m.mappingTitle(m.resolvingEpisode.MediaID, m.selectedSource.ID, m.resolvingEpisode.Title)
+		m.prepareResolutionSearches(*m.resolvingEpisode)
 		m.loading, m.err = true, nil
 		return m, tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQuery))
 	case stageDetails:
@@ -1544,6 +1820,25 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selectedEpisode = selected.episode
+		if !m.selectedSource.IsAnime() {
+			entry := appconfig.MangaReadingEntry{
+				Title:            firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle()),
+				SourceID:         m.selectedSource.ID,
+				SourceName:       m.selectedSource.Name,
+				MediaURL:         firstNonEmpty(m.details.URL, m.selectedMedia.URL),
+				ChapterURL:       m.selectedEpisode.URL,
+				ChapterName:      firstNonEmpty(m.selectedEpisode.Name, m.selectedEpisode.Title, "Chapter "+m.selectedEpisode.Number()),
+				ChapterScanlator: m.selectedEpisode.Scanlator,
+				ChapterNumber:    m.selectedEpisode.Number(), Page: 1, UpdatedAt: time.Now().UnixMilli(),
+			}
+			if m.resolvingEpisode != nil {
+				entry.AniListEntryID = m.resolvingEpisode.ID
+				entry.AniListMediaID = m.resolvingEpisode.MediaID
+			}
+			m.pendingMangaReading = &entry
+			m.activeMangaReading = nil
+			m.mangaReaderReturnHome = false
+		}
 		m.loading, m.err = true, nil
 		if m.selectedSource.IsAnime() {
 			return m, tea.Batch(m.spinner.Tick, m.loadVideos())
@@ -1599,10 +1894,49 @@ func (m Model) activateTrackedEpisode(entry anilist.Entry) (tea.Model, tea.Cmd) 
 	m.details = catalog.Media{}
 	m.selectedSource = m.sourceForMedia(entry.MediaID, sources)
 	m.rememberActiveSource(m.selectedSource)
-	m.resolutionQuery = m.mappingTitle(entry.MediaID, m.selectedSource.ID, entry.Title)
+	m.prepareResolutionSearches(entry)
 	m.search.SetValue(m.resolutionQuery)
 	m.loading, m.err = true, nil
 	return m, tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQuery))
+}
+
+func (m Model) activateTrackedManga(entry anilist.Entry) (tea.Model, tea.Cmd) {
+	sources := m.homeSources()
+	if len(sources) == 0 {
+		m.err = fmt.Errorf("install a manga source to open this title")
+		return m, nil
+	}
+	m.resolvingEpisode = &entry
+	m.manualMapping = false
+	m.details = catalog.Media{}
+	m.selectedSource = m.sourceForMedia(entry.MediaID, sources)
+	m.rememberActiveSource(m.selectedSource)
+	m.prepareResolutionSearches(entry)
+	m.search.SetValue(m.resolutionQuery)
+	m.loading, m.err = true, nil
+	return m, tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQuery))
+}
+
+func (m Model) resumeManga(entry appconfig.MangaReadingEntry) (tea.Model, tea.Cmd) {
+	for _, source := range m.sources {
+		if source.ID != entry.SourceID {
+			continue
+		}
+		m.selectedSource = source
+		m.selectedMedia = catalog.Media{Title: entry.Title, URL: entry.MediaURL}
+		m.details = m.selectedMedia
+		m.selectedEpisode = catalog.Episode{
+			URL: entry.ChapterURL, Name: entry.ChapterName, EpisodeNumber: entry.ChapterNumber,
+			Scanlator: entry.ChapterScanlator,
+		}
+		m.pendingMangaReading = &entry
+		m.activeMangaReading = nil
+		m.mangaReaderReturnHome = true
+		m.loading, m.err = true, nil
+		return m, tea.Batch(m.spinner.Tick, m.loadPages())
+	}
+	m.err = fmt.Errorf("the saved manga source %q is not installed", entry.SourceName)
+	return m, nil
 }
 
 func (m Model) playSelected() (tea.Model, tea.Cmd) {
@@ -1838,6 +2172,20 @@ func prependContinue(entries []appconfig.ContinueEntry, entry appconfig.Continue
 	return result
 }
 
+func prependMangaReading(entries []appconfig.MangaReadingEntry, entry appconfig.MangaReadingEntry) []appconfig.MangaReadingEntry {
+	result := []appconfig.MangaReadingEntry{entry}
+	for _, existing := range entries {
+		if existing.SourceID == entry.SourceID && existing.MediaURL == entry.MediaURL {
+			continue
+		}
+		result = append(result, existing)
+		if len(result) == 10 {
+			break
+		}
+	}
+	return result
+}
+
 func prependStreamPreference(items []appconfig.StreamPreference, preference appconfig.StreamPreference) []appconfig.StreamPreference {
 	result := []appconfig.StreamPreference{preference}
 	for _, existing := range items {
@@ -1992,7 +2340,14 @@ func (m *Model) back() {
 			m.stage = stageEpisodes
 		}
 	case stagePages:
-		m.stage = stageEpisodes
+		m.closeActiveMangaReader()
+		if m.mangaReaderReturnHome {
+			m.stage = stageSources
+		} else {
+			m.stage = stageEpisodes
+			m.cursor = m.episodeList.Index()
+		}
+		m.mangaReaderReturnHome = false
 	case stageRepositories:
 		m.stage = stageSources
 	case stageDiscoverSources:
@@ -2020,10 +2375,39 @@ func (m *Model) back() {
 	}
 }
 
+func (m *Model) closeActiveMangaReader() {
+	if m.mangaReader == nil || m.activeMangaSessionID == "" {
+		return
+	}
+	id := m.activeMangaSessionID
+	if err := m.mangaReader.CloseSession(id); err != nil {
+		m.err = fmt.Errorf("close manga reader: %w", err)
+	}
+	delete(m.mangaReaderSessions, id)
+	delete(m.pendingMangaProgress, id)
+	m.activeMangaSessionID = ""
+	m.activeMangaSessionURL = ""
+	m.activeMangaReading = nil
+	m.pages = nil
+}
+
 func (m *Model) clearEpisodeResolution() {
 	m.resolvingEpisode = nil
 	m.manualMapping = false
 	m.resolutionQuery = ""
+	m.resolutionTitles = nil
+	m.resolutionSearches = nil
+	m.resolutionSearchIndex = 0
+	m.resolutionSavedTitle = ""
+	m.resolutionSavedMedia = catalog.Media{}
+	m.resolutionHasSaved = false
+	m.resolutionVerifyLeft = 3
+	m.resolutionExactMedia = catalog.Media{}
+	m.resolutionHasExact = false
+	m.resolutionBest = catalog.Media{}
+	m.resolutionBestScore = 0
+	m.resolutionHasBest = false
+	m.resolutionFallback = nil
 	m.status = ""
 }
 
@@ -2051,7 +2435,7 @@ func (m Model) currentLength() int {
 	case stageAniListLibrary:
 		return len(m.trackingEntries)
 	case stageEpisodeSource:
-		return len(m.animeSources())
+		return len(m.resolutionSources())
 	default:
 		return 0
 	}
@@ -2077,6 +2461,19 @@ func (m Model) animeSources() []catalog.Source {
 	return result
 }
 
+func (m Model) resolutionSources() []catalog.Source {
+	if m.resolvingEpisode != nil && strings.EqualFold(m.resolvingEpisode.Type, "MANGA") {
+		result := make([]catalog.Source, 0, len(m.sources))
+		for _, source := range m.sources {
+			if strings.EqualFold(source.Type, "manga") {
+				result = append(result, source)
+			}
+		}
+		return result
+	}
+	return m.animeSources()
+}
+
 func (m Model) sourceForMedia(mediaID int, sources []catalog.Source) catalog.Source {
 	for _, mapping := range m.mediaMappings {
 		if mapping.MediaID != mediaID {
@@ -2088,14 +2485,15 @@ func (m Model) sourceForMedia(mediaID int, sources []catalog.Source) catalog.Sou
 			}
 		}
 	}
-	if sourceID := m.activeSources["anime"]; sourceID != "" {
+	itemType := strings.ToLower(sources[0].Type)
+	if sourceID := m.activeSources[itemType]; sourceID != "" {
 		for _, source := range sources {
 			if source.ID == sourceID {
 				return source
 			}
 		}
 	}
-	if m.selectedSource.IsAnime() {
+	if strings.EqualFold(m.selectedSource.Type, itemType) {
 		for _, source := range sources {
 			if source.ID == m.selectedSource.ID {
 				return source
@@ -2105,13 +2503,322 @@ func (m Model) sourceForMedia(mediaID int, sources []catalog.Source) catalog.Sou
 	return sources[0]
 }
 
-func (m Model) mappingTitle(mediaID int, sourceID, fallback string) string {
+func (m Model) savedMappingTitle(mediaID int, sourceID string) (string, bool) {
 	for _, mapping := range m.mediaMappings {
-		if mapping.MediaID == mediaID && mapping.SourceID == sourceID && mapping.Title != "" {
-			return mapping.Title
+		if mapping.MediaID == mediaID && mapping.SourceID == sourceID && strings.TrimSpace(mapping.Title) != "" {
+			return strings.TrimSpace(mapping.Title), true
 		}
 	}
-	return fallback
+	return "", false
+}
+
+func (m *Model) prepareResolutionSearches(entry anilist.Entry) {
+	m.resolutionTitles = nil
+	m.resolutionSearches = nil
+	m.resolutionSearchIndex = 0
+	m.resolutionSavedTitle = ""
+	m.resolutionSavedMedia = catalog.Media{}
+	m.resolutionHasSaved = false
+	m.resolutionVerifyLeft = 3
+	m.resolutionExactMedia = catalog.Media{}
+	m.resolutionHasExact = false
+	m.resolutionBest = catalog.Media{}
+	m.resolutionBestScore = 0
+	m.resolutionHasBest = false
+	m.resolutionFallback = nil
+
+	appendTitle := func(value string) {
+		value = strings.TrimSpace(value)
+		if invalidResolutionTitle(value) {
+			return
+		}
+		for _, existing := range m.resolutionTitles {
+			if lightTitleKey(existing) == lightTitleKey(value) {
+				return
+			}
+		}
+		m.resolutionTitles = append(m.resolutionTitles, value)
+	}
+	appendTitle(entry.Title)
+	appendTitle(entry.EnglishTitle)
+	appendTitle(entry.RomajiTitle)
+	appendTitle(entry.NativeTitle)
+	for index, synonym := range entry.Synonyms {
+		if index == 3 {
+			break
+		}
+		appendTitle(synonym)
+	}
+
+	seenQueries := make(map[string]bool)
+	appendSearch := func(value string, saved, heavy bool, heavyAttempt int) bool {
+		value = strings.TrimSpace(value)
+		if invalidResolutionTitle(value) {
+			return false
+		}
+		key := lightTitleKey(value)
+		if seenQueries[key] {
+			return false
+		}
+		seenQueries[key] = true
+		m.resolutionSearches = append(m.resolutionSearches, resolutionSearch{
+			query: value, saved: saved, heavy: heavy, heavyAttempt: heavyAttempt,
+		})
+		return true
+	}
+	if saved, ok := m.savedMappingTitle(entry.MediaID, m.selectedSource.ID); ok {
+		m.resolutionSavedTitle = saved
+		// The saved title is a source-side name, so it must not count as an
+		// AniList title when checking for an exact match.
+		appendSearch(saved, true, false, 0)
+	}
+	for _, title := range m.resolutionTitles {
+		appendSearch(title, false, false, 0)
+	}
+	heavyAttempt := 0
+	for _, title := range []string{firstNonEmpty(entry.EnglishTitle, entry.Title), entry.RomajiTitle} {
+		heavy := heavyNormalizeTitle(title)
+		if lightTitleKey(heavy) != lightTitleKey(title) && appendSearch(heavy, false, true, heavyAttempt+1) {
+			heavyAttempt++
+		}
+	}
+	if len(m.resolutionSearches) == 0 {
+		appendSearch(entry.Title, false, false, 0)
+	}
+	if len(m.resolutionSearches) > 0 {
+		m.resolutionQuery = m.resolutionSearches[0].query
+	}
+}
+
+func lightTitleKey(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+}
+
+func invalidResolutionTitle(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "?", "??", "null":
+		return true
+	default:
+		return false
+	}
+}
+
+func heavyNormalizeTitle(value string) string {
+	words := strings.Fields(normalizeTitle(value))
+	filtered := words[:0]
+	for _, word := range words {
+		if word != "season" {
+			filtered = append(filtered, word)
+		}
+	}
+	return strings.Join(filtered, " ")
+}
+
+func (m *Model) scoreResolutionResults(results []catalog.Media) {
+	for _, media := range results {
+		title := media.DisplayTitle()
+		if m.resolutionSavedTitle != "" && !m.resolutionHasSaved && lightTitleKey(title) == lightTitleKey(m.resolutionSavedTitle) {
+			m.resolutionSavedMedia = media
+			m.resolutionHasSaved = true
+		}
+		if !m.resolutionHasExact && m.exactResolutionTitle(title) {
+			m.resolutionExactMedia = media
+			m.resolutionHasExact = true
+		}
+		for _, target := range m.resolutionTitles {
+			heavy := m.resolutionSearchIndex < len(m.resolutionSearches) && m.resolutionSearches[m.resolutionSearchIndex].heavy
+			score := fuzzyTitleMatchScore(target, title, heavy)
+			if !m.resolutionHasBest || score > m.resolutionBestScore {
+				m.resolutionBest = media
+				m.resolutionBestScore = score
+				m.resolutionHasBest = true
+				m.resolutionFallback = append([]catalog.Media(nil), results...)
+			}
+		}
+	}
+}
+
+// exactResolutionTitle reports whether a source result is the same title as
+// one of the tracked English, Romaji, native, preferred, or synonym titles.
+func (m Model) exactResolutionTitle(result string) bool {
+	for _, title := range m.resolutionTitles {
+		if exactResolutionTitleMatch(title, result) {
+			return true
+		}
+	}
+	return false
+}
+
+func exactResolutionTitleMatch(left, right string) bool {
+	left, right = lightTitleKey(left), lightTitleKey(right)
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	normalizedLeft, normalizedRight := normalizeTitle(left), normalizeTitle(right)
+	return normalizedLeft != "" && normalizedLeft == normalizedRight
+}
+
+func fuzzyTitleMatchScore(target, result string, heavy bool) float64 {
+	targetSeason, targetHasSeason := extractSeasonNumber(target)
+	resultSeason, resultHasSeason := extractSeasonNumber(result)
+	if heavy {
+		target, result = heavyNormalizeTitle(target), heavyNormalizeTitle(result)
+	} else {
+		target, result = strings.ToLower(strings.TrimSpace(target)), strings.ToLower(strings.TrimSpace(result))
+	}
+	if target == "" || result == "" {
+		return 0
+	}
+	score := tokenSetRatio(target, result)*0.4 + partialTitleRatio(target, result)*0.3 + titleRatio(target, result)*0.3
+	if targetHasSeason && resultHasSeason {
+		if targetSeason == resultSeason {
+			score += 0.3
+		} else {
+			score -= 0.1
+		}
+	}
+	return max(0, min(1, score))
+}
+
+func titleRatio(left, right string) float64 {
+	a, b := []rune(left), []rune(right)
+	longest := max(len(a), len(b))
+	if longest == 0 {
+		return 1
+	}
+	return 1 - float64(levenshteinDistance(a, b))/float64(longest)
+}
+
+func partialTitleRatio(left, right string) float64 {
+	shorter, longer := []rune(left), []rune(right)
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
+	}
+	if len(shorter) == 0 {
+		return 0
+	}
+	best := 0.0
+	for start := 0; start+len(shorter) <= len(longer); start++ {
+		best = max(best, titleRatio(string(shorter), string(longer[start:start+len(shorter)])))
+	}
+	return best
+}
+
+func tokenSetRatio(left, right string) float64 {
+	leftSet, rightSet := make(map[string]bool), make(map[string]bool)
+	for _, token := range strings.Fields(left) {
+		leftSet[token] = true
+	}
+	for _, token := range strings.Fields(right) {
+		rightSet[token] = true
+	}
+	intersection, leftOnly, rightOnly := make([]string, 0), make([]string, 0), make([]string, 0)
+	for token := range leftSet {
+		if rightSet[token] {
+			intersection = append(intersection, token)
+		} else {
+			leftOnly = append(leftOnly, token)
+		}
+	}
+	for token := range rightSet {
+		if !leftSet[token] {
+			rightOnly = append(rightOnly, token)
+		}
+	}
+	sort.Strings(intersection)
+	sort.Strings(leftOnly)
+	sort.Strings(rightOnly)
+	common := strings.Join(intersection, " ")
+	leftCombined := strings.TrimSpace(strings.Join(append(append([]string{}, intersection...), leftOnly...), " "))
+	rightCombined := strings.TrimSpace(strings.Join(append(append([]string{}, intersection...), rightOnly...), " "))
+	if common == "" {
+		return titleRatio(leftCombined, rightCombined)
+	}
+	return max(titleRatio(common, leftCombined), titleRatio(common, rightCombined), titleRatio(leftCombined, rightCombined))
+}
+
+func levenshteinDistance(left, right []rune) int {
+	previous := make([]int, len(right)+1)
+	for index := range previous {
+		previous[index] = index
+	}
+	for i, leftRune := range left {
+		current := make([]int, len(right)+1)
+		current[0] = i + 1
+		for j, rightRune := range right {
+			cost := 0
+			if leftRune != rightRune {
+				cost = 1
+			}
+			current[j+1] = min(current[j]+1, previous[j+1]+1, previous[j]+cost)
+		}
+		previous = current
+	}
+	return previous[len(right)]
+}
+
+var seasonPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(\d+)(?:th|st|nd|rd)?\s*season\b`),
+	regexp.MustCompile(`(?i)\bseason\s*(\d+)\b`),
+	regexp.MustCompile(`(?i)\b(\d+)(?:nd|rd|th|st)\b`),
+	regexp.MustCompile(`\s(\d+)\s*$`),
+}
+
+func extractSeasonNumber(title string) (int, bool) {
+	for _, pattern := range seasonPatterns {
+		match := pattern.FindStringSubmatch(title)
+		if len(match) < 2 {
+			continue
+		}
+		value, err := strconv.Atoi(match[1])
+		if err == nil {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func (m *Model) advanceResolutionSearch() bool {
+	for m.resolutionSearchIndex+1 < len(m.resolutionSearches) {
+		m.resolutionSearchIndex++
+		next := m.resolutionSearches[m.resolutionSearchIndex]
+		if next.heavy {
+			if m.resolutionHasSaved {
+				continue
+			}
+			if m.resolutionHasBest {
+				skipScore := 0.7
+				if next.heavyAttempt > 1 {
+					skipScore = 0.8
+				}
+				if m.resolutionBestScore >= skipScore {
+					continue
+				}
+			}
+		}
+		m.resolutionQuery = next.query
+		return true
+	}
+	return false
+}
+
+func (m Model) acceptResolvedMedia(media catalog.Media) (tea.Model, tea.Cmd) {
+	m.selectedMedia = media
+	m.loading = true
+	m.status = ""
+	return m, tea.Batch(m.spinner.Tick, m.loadDetails())
+}
+
+func (m Model) openAlternativeTitle() (tea.Model, tea.Cmd) {
+	m.loading = false
+	m.stage = stageAlternativeTitle
+	m.alternativeTitle.SetValue(m.resolutionQuery)
+	m.alternativeTitle.Focus()
+	m.err = fmt.Errorf("no match found in %s; try an alternative title", m.selectedSource.Name)
+	return m, textinput.Blink
 }
 
 func (m *Model) rememberActiveSource(source catalog.Source) {
@@ -2138,18 +2845,6 @@ func prependMediaMapping(mappings []appconfig.MediaMapping, mapping appconfig.Me
 	return result
 }
 
-func bestMediaMatch(query string, results []catalog.Media) int {
-	query = normalizeTitle(query)
-	bestIndex, bestScore := 0, -1
-	for index, media := range results {
-		score := titleMatchScore(query, normalizeTitle(media.DisplayTitle()))
-		if score > bestScore {
-			bestIndex, bestScore = index, score
-		}
-	}
-	return bestIndex
-}
-
 func normalizeTitle(value string) string {
 	var normalized strings.Builder
 	for _, character := range strings.ToLower(value) {
@@ -2158,30 +2853,6 @@ func normalizeTitle(value string) string {
 		}
 	}
 	return strings.Join(strings.Fields(normalized.String()), " ")
-}
-
-func titleMatchScore(query, title string) int {
-	if query == title {
-		return 10000
-	}
-	score := 0
-	if strings.Contains(title, query) || strings.Contains(query, title) {
-		score += 1000
-	}
-	queryWords := make(map[string]bool)
-	for _, word := range strings.Fields(query) {
-		queryWords[word] = true
-	}
-	for _, word := range strings.Fields(title) {
-		if queryWords[word] {
-			score += len(word) * 10
-		}
-	}
-	difference := len(title) - len(query)
-	if difference < 0 {
-		difference = -difference
-	}
-	return score - difference
 }
 
 func episodeCursor(episodes []catalog.Episode, target int) int {
@@ -2213,6 +2884,13 @@ func nextEpisodeTargetWithLocal(entry anilist.Entry, locallyWatched []string) in
 	}
 	entry.Progress = progress
 	return nextEpisodeTarget(entry)
+}
+
+func nextMangaChapterTarget(entry anilist.Entry) int {
+	if strings.EqualFold(entry.Status, "COMPLETED") || (entry.Total > 0 && entry.Progress >= entry.Total) {
+		return entry.Progress
+	}
+	return entry.Progress + 1
 }
 
 func normalizedEpisodeNumber(value string) string {
@@ -2304,6 +2982,91 @@ func (m *Model) refreshContinueWatching() {
 	replaceHomeItems(&m.continueWatchingList, items)
 	m.resizeContinueWatchingList()
 	m.normalizeHomeFocus()
+}
+
+func (m *Model) refreshMangaHome() {
+	resumeItems := make([]list.Item, len(m.mangaReading))
+	for index, entry := range m.mangaReading {
+		resumeItems[index] = mangaResumeListItem{entry: entry}
+	}
+	replaceHomeItems(&m.mangaResumeList, resumeItems)
+	m.normalizeMangaFeed()
+	m.refreshMangaTrackingList()
+	m.resizeMangaLists()
+}
+
+func (m *Model) refreshMangaTrackingList() {
+	entries := m.mangaEntries(m.mangaFeed)
+	items := make([]list.Item, len(entries))
+	for index, entry := range entries {
+		items[index] = mangaTrackingListItem{entry: entry}
+	}
+	replaceHomeItems(&m.mangaTrackingList, items)
+}
+
+func (m Model) mangaEntries(feed mangaFeed) []anilist.Entry {
+	entries := make([]anilist.Entry, 0)
+	for _, entry := range m.trackingEntries {
+		if !strings.EqualFold(entry.Type, "MANGA") {
+			continue
+		}
+		if feed != mangaFeedAll && !strings.EqualFold(entry.Status, string(feed)) {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func (m Model) mangaFeeds() []mangaFeed {
+	feeds := []mangaFeed{mangaFeedResume}
+	for _, feed := range []mangaFeed{
+		mangaFeedReading, mangaFeedCompleted, mangaFeedPaused, mangaFeedDropped,
+		mangaFeedPlanning, mangaFeedRereading,
+	} {
+		if len(m.mangaEntries(feed)) > 0 {
+			feeds = append(feeds, feed)
+		}
+	}
+	return append(feeds, mangaFeedAll)
+}
+
+func (m *Model) normalizeMangaFeed() {
+	for _, feed := range m.mangaFeeds() {
+		if feed == m.mangaFeed {
+			return
+		}
+	}
+	m.mangaFeed = mangaFeedResume
+}
+
+func mangaStatusLabel(status string) string {
+	switch strings.ToUpper(status) {
+	case "CURRENT":
+		return "Reading"
+	case "COMPLETED":
+		return "Completed"
+	case "PAUSED":
+		return "Paused"
+	case "DROPPED":
+		return "Dropped"
+	case "PLANNING":
+		return "Planning"
+	case "REPEATING":
+		return "Rereading"
+	default:
+		return strings.Title(strings.ToLower(status))
+	}
+}
+
+func mangaFeedLabel(feed mangaFeed) string {
+	if feed == mangaFeedResume {
+		return "Resume"
+	}
+	if feed == mangaFeedAll {
+		return "All"
+	}
+	return mangaStatusLabel(string(feed))
 }
 
 func (m *Model) refreshResumeWatching() {
@@ -2417,6 +3180,12 @@ func (m *Model) resizeContinueWatchingList() {
 
 func (m *Model) resizeResumeWatchingList() {
 	m.resumeWatchingList.SetSize(max(32, m.width-8), max(3, m.height-14))
+}
+
+func (m *Model) resizeMangaLists() {
+	width, height := max(32, m.width-8), max(3, m.height-14)
+	m.mangaResumeList.SetSize(width, height)
+	m.mangaTrackingList.SetSize(width, height)
 }
 
 func newEpisodeDelegate(focused, loading bool, spinnerView string) list.DefaultDelegate {
@@ -2554,7 +3323,8 @@ func (m Model) loadRepositories() tea.Cmd {
 		config, err := m.configStore.Load()
 		return repositoriesMsg{
 			items: config.Repositories, token: config.AniListToken,
-			continueWatching: config.ContinueWatching, activeSources: config.ActiveSources,
+			continueWatching: config.ContinueWatching, mangaReading: config.MangaReading,
+			activeSources: config.ActiveSources,
 			mediaMappings: config.MediaMappings, sourceCredentials: config.SourceCredentials,
 			streamPreferences: config.StreamPreferences, err: err,
 		}
@@ -2940,6 +3710,32 @@ func (m Model) loadPages() tea.Cmd {
 		defer cancel()
 		items, err := m.service.Pages(ctx, m.selectedSource, m.selectedEpisode)
 		return pagesMsg{items: items, err: err}
+	}
+}
+
+func (m Model) openMangaReader(entry appconfig.MangaReadingEntry, pages []catalog.Page) tea.Cmd {
+	return func() tea.Msg {
+		readerPages := make([]mangareader.Page, len(pages))
+		for index, page := range pages {
+			readerPages[index] = mangareader.Page{URL: page.URL, Headers: page.Headers}
+		}
+		entry.TotalPages = len(readerPages)
+		if entry.Page < 1 || entry.Page > entry.TotalPages {
+			entry.Page = 1
+		}
+		session, err := m.mangaReader.Open(mangareader.Session{
+			Title: entry.Title, Chapter: entry.ChapterName, Pages: readerPages, StartPage: entry.Page,
+		})
+		return mangaReaderOpenedMsg{session: session, entry: entry, err: err}
+	}
+}
+
+func (m Model) waitForMangaReaderProgress() tea.Cmd {
+	if m.mangaReader == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return mangaReaderProgressMsg{event: <-m.mangaReader.Events()}
 	}
 }
 

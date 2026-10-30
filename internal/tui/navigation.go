@@ -28,6 +28,12 @@ func replaceHomeItems(model *list.Model, items []list.Item) {
 }
 
 func (m *Model) activeHomeList() *list.Model {
+	if m.homeType == "manga" {
+		if m.mangaFeed == mangaFeedResume {
+			return &m.mangaResumeList
+		}
+		return &m.mangaTrackingList
+	}
 	switch m.homeFocus {
 	case homeFocusResumeWatching:
 		return &m.resumeWatchingList
@@ -41,6 +47,22 @@ func (m *Model) activeHomeList() *list.Model {
 }
 
 func (m *Model) cycleHomeFeed(delta int) {
+	if m.homeType == "manga" {
+		feeds := m.mangaFeeds()
+		if len(feeds) == 0 {
+			return
+		}
+		index := 0
+		for i, feed := range feeds {
+			if feed == m.mangaFeed {
+				index = i
+				break
+			}
+		}
+		m.mangaFeed = feeds[(index+delta+len(feeds))%len(feeds)]
+		m.refreshMangaTrackingList()
+		return
+	}
 	if m.homeType != "anime" {
 		return
 	}
@@ -166,9 +188,16 @@ var keyHelpSections = []keyHelpSection{
 	}},
 	{title: "ANIME & PLAYBACK", bindings: [][2]string{
 		{"a", "Use an alternative title"},
-		{"s", "Change anime source"},
+		{"s", "Change source"},
 		{"c", "Cloudflare source recovery"},
 		{"Space", "Remember selected server"},
+	}},
+	{title: "MANGA CHAPTERS", bindings: [][2]string{
+		{"Tab / Shift+Tab", "Next / previous scanlator"},
+		{"←/→ or h/l", "Previous / next scanlator"},
+	}},
+	{title: "MANGA READER", bindings: [][2]string{
+		{"Ctrl+O", "Reopen the browser reader"},
 	}},
 	{title: "ANILIST EDITOR", bindings: [][2]string{
 		{"←/→ or -/+", "Progress −1 / +1"},

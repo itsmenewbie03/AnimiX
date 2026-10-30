@@ -20,6 +20,7 @@ type Config struct {
 	Repositories          []Repository          `json:"repositories" toml:"repositories"`
 	AniListToken          string                `json:"anilistToken,omitempty" toml:"anilist_token,omitempty"`
 	ContinueWatching      []ContinueEntry       `json:"continueWatching,omitempty" toml:"continue_watching,omitempty"`
+	MangaReading          []MangaReadingEntry   `json:"mangaReading,omitempty" toml:"manga_reading,omitempty"`
 	ActiveSources         map[string]string     `json:"activeSources,omitempty" toml:"active_sources,omitempty"`
 	MediaMappings         []MediaMapping        `json:"mediaMappings,omitempty" toml:"media_mappings,omitempty"`
 	SourceCredentials     []SourceCredential    `json:"sourceCredentials,omitempty" toml:"source_credentials,omitempty"`
@@ -132,6 +133,22 @@ type ContinueEntry struct {
 	RemoteWatched      []string          `json:"remoteWatchedEpisodes,omitempty" toml:"remote_watched_episodes,omitempty"`
 }
 
+type MangaReadingEntry struct {
+	Title            string `json:"title" toml:"title"`
+	SourceID         string `json:"sourceId" toml:"source_id"`
+	SourceName       string `json:"sourceName,omitempty" toml:"source_name,omitempty"`
+	MediaURL         string `json:"mediaUrl" toml:"media_url"`
+	ChapterURL       string `json:"chapterUrl" toml:"chapter_url"`
+	ChapterName      string `json:"chapterName,omitempty" toml:"chapter_name,omitempty"`
+	ChapterScanlator string `json:"chapterScanlator,omitempty" toml:"chapter_scanlator,omitempty"`
+	ChapterNumber    string `json:"chapterNumber" toml:"chapter_number"`
+	Page             int    `json:"page" toml:"page"`
+	TotalPages       int    `json:"totalPages" toml:"total_pages"`
+	UpdatedAt        int64  `json:"updatedAt" toml:"updated_at"`
+	AniListEntryID   int    `json:"aniListEntryId,omitempty" toml:"anilist_entry_id,omitempty"`
+	AniListMediaID   int    `json:"aniListMediaId,omitempty" toml:"anilist_media_id,omitempty"`
+}
+
 func (s *Store) SetAniListToken(token string) error {
 	config, err := s.Load()
 	if err != nil {
@@ -169,6 +186,25 @@ func (s *Store) SaveContinue(entry ContinueEntry) error {
 	}
 	filtered = append([]ContinueEntry{entry}, filtered...)
 	config.ContinueWatching = filtered
+	return s.Save(config)
+}
+
+func (s *Store) SaveMangaReading(entry MangaReadingEntry) error {
+	config, err := s.Load()
+	if err != nil {
+		return err
+	}
+	filtered := make([]MangaReadingEntry, 0, len(config.MangaReading)+1)
+	for _, existing := range config.MangaReading {
+		if existing.SourceID == entry.SourceID && existing.MediaURL == entry.MediaURL {
+			continue
+		}
+		filtered = append(filtered, existing)
+		if len(filtered) == 9 {
+			break
+		}
+	}
+	config.MangaReading = append([]MangaReadingEntry{entry}, filtered...)
 	return s.Save(config)
 }
 
@@ -288,13 +324,14 @@ type settings struct {
 }
 
 type state struct {
-	Repositories      []Repository       `json:"repositories"`
-	AniListToken      string             `json:"anilistToken,omitempty"`
-	ContinueWatching  []ContinueEntry    `json:"continueWatching,omitempty"`
-	ActiveSources     map[string]string  `json:"activeSources,omitempty"`
-	MediaMappings     []MediaMapping     `json:"mediaMappings,omitempty"`
-	SourceCredentials []SourceCredential `json:"sourceCredentials,omitempty"`
-	StreamPreferences []StreamPreference `json:"streamPreferences,omitempty"`
+	Repositories      []Repository        `json:"repositories"`
+	AniListToken      string              `json:"anilistToken,omitempty"`
+	ContinueWatching  []ContinueEntry     `json:"continueWatching,omitempty"`
+	MangaReading      []MangaReadingEntry `json:"mangaReading,omitempty"`
+	ActiveSources     map[string]string   `json:"activeSources,omitempty"`
+	MediaMappings     []MediaMapping      `json:"mediaMappings,omitempty"`
+	SourceCredentials []SourceCredential  `json:"sourceCredentials,omitempty"`
+	StreamPreferences []StreamPreference  `json:"streamPreferences,omitempty"`
 }
 
 func (s *Store) Load() (Config, error) {
@@ -435,7 +472,7 @@ func (s *Store) migrateLegacyData() error {
 }
 
 func hasManagedState(config Config) bool {
-	return len(config.Repositories) > 0 || config.AniListToken != "" || len(config.ContinueWatching) > 0 ||
+	return len(config.Repositories) > 0 || config.AniListToken != "" || len(config.ContinueWatching) > 0 || len(config.MangaReading) > 0 ||
 		len(config.ActiveSources) > 0 || len(config.MediaMappings) > 0 ||
 		len(config.SourceCredentials) > 0 || len(config.StreamPreferences) > 0
 }
@@ -444,6 +481,7 @@ func stateFromConfig(config Config) state {
 	return state{
 		Repositories: config.Repositories, AniListToken: config.AniListToken,
 		ContinueWatching: config.ContinueWatching, ActiveSources: config.ActiveSources,
+		MangaReading:  config.MangaReading,
 		MediaMappings: config.MediaMappings, SourceCredentials: config.SourceCredentials,
 		StreamPreferences: config.StreamPreferences,
 	}
@@ -452,6 +490,7 @@ func stateFromConfig(config Config) state {
 func applyState(config *Config, values state) {
 	config.Repositories, config.AniListToken = values.Repositories, values.AniListToken
 	config.ContinueWatching, config.ActiveSources = values.ContinueWatching, values.ActiveSources
+	config.MangaReading = values.MangaReading
 	config.MediaMappings, config.SourceCredentials = values.MediaMappings, values.SourceCredentials
 	config.StreamPreferences = values.StreamPreferences
 }

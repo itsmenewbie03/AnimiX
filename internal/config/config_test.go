@@ -78,6 +78,35 @@ func TestResumeAniListSyncMigratesBooleanValues(t *testing.T) {
 	}
 }
 
+func TestMangaReadingProgressPersistsLatestPage(t *testing.T) {
+	t.Parallel()
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	entry := MangaReadingEntry{
+		Title: "Witch Hat Atelier", SourceID: "manga", MediaURL: "/witch-hat",
+		ChapterNumber: "12", ChapterName: "Chapter 12", ChapterURL: "/chapter-12",
+		Page: 3, TotalPages: 24, UpdatedAt: 10,
+	}
+	if err := store.SaveMangaReading(entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Page, entry.UpdatedAt = 9, 20
+	if err := store.SaveMangaReading(entry); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MangaReading) != 1 {
+		t.Fatalf("MangaReading = %#v", loaded.MangaReading)
+	}
+	got := loaded.MangaReading[0]
+	if got.Page != 9 || got.TotalPages != 24 || got.ChapterNumber != "12" {
+		t.Fatalf("saved manga progress = %#v", got)
+	}
+}
+
 func TestAutoPlayNextEpisodeUsesUnsetAskState(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")

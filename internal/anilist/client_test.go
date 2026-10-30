@@ -23,7 +23,7 @@ func TestLibraryAndUpdate(t *testing.T) {
 		case 1:
 			fmt.Fprint(response, `{"data":{"Viewer":{"id":7,"name":"tester"}}}`)
 		case 2:
-			fmt.Fprint(response, `{"data":{"anime":{"lists":[{"entries":[{"id":10,"status":"CURRENT","progress":3,"media":{"id":99,"type":"ANIME","status":"RELEASING","title":{"userPreferred":"Example"},"episodes":12,"chapters":null,"nextAiringEpisode":{"episode":7,"airingAt":1800000000},"startDate":{"year":2026,"month":10,"day":1},"endDate":{"year":2027,"month":3,"day":4}}}]}]},"manga":{"lists":[]}}}`)
+			fmt.Fprint(response, `{"data":{"anime":{"lists":[{"entries":[{"id":10,"status":"CURRENT","progress":3,"media":{"id":99,"type":"ANIME","status":"RELEASING","title":{"userPreferred":"Example","english":"Example English","romaji":"Example Romaji","native":"例"},"synonyms":["Example Alt"],"episodes":12,"chapters":null,"nextAiringEpisode":{"episode":7,"airingAt":1800000000},"startDate":{"year":2026,"month":10,"day":1},"endDate":{"year":2027,"month":3,"day":4}}}]}]},"manga":{"lists":[]}}}`)
 		case 3:
 			fmt.Fprint(response, `{"data":{"SaveMediaListEntry":{"id":10,"status":"COMPLETED","progress":12}}}`)
 		default:
@@ -42,6 +42,9 @@ func TestLibraryAndUpdate(t *testing.T) {
 		t.Fatalf("library = %#v", library)
 	}
 	entry := library.Entries[0]
+	if entry.EnglishTitle != "Example English" || entry.RomajiTitle != "Example Romaji" || entry.NativeTitle != "例" || len(entry.Synonyms) != 1 || entry.Synonyms[0] != "Example Alt" {
+		t.Fatalf("title variants = %#v", entry)
+	}
 	if entry.MediaStatus != "RELEASING" || entry.NextAiringEpisode == nil || entry.NextAiringEpisode.AiringAt != 1800000000 {
 		t.Fatalf("release metadata = %#v", entry)
 	}
@@ -61,6 +64,35 @@ func TestLibraryAndUpdate(t *testing.T) {
 	}
 	if requests != 3 {
 		t.Fatalf("requests = %d", requests)
+	}
+}
+
+func TestLibraryRetainsMangaTitleVariants(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			fmt.Fprint(response, `{"data":{"Viewer":{"id":7,"name":"tester"}}}`)
+			return
+		}
+		fmt.Fprint(response, `{"data":{"anime":{"lists":[]},"manga":{"lists":[{"entries":[{"id":20,"status":"CURRENT","progress":4,"media":{"id":199,"type":"MANGA","title":{"userPreferred":"Preferred","english":"English","romaji":"Romaji","native":"原題"},"synonyms":["Alias One","Alias Two"],"chapters":20}}]}]}}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient()
+	client.endpoint = server.URL
+	library, err := client.Library(context.Background(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(library.Entries) != 1 {
+		t.Fatalf("entries = %#v", library.Entries)
+	}
+	entry := library.Entries[0]
+	if entry.Type != "MANGA" || entry.EnglishTitle != "English" || entry.RomajiTitle != "Romaji" || entry.NativeTitle != "原題" || strings.Join(entry.Synonyms, ",") != "Alias One,Alias Two" {
+		t.Fatalf("manga title variants = %#v", entry)
 	}
 }
 

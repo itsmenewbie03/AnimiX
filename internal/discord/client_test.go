@@ -14,6 +14,17 @@ import (
 	"github.com/coder/websocket"
 )
 
+func TestSettingsUseAnimiXApplicationByDefault(t *testing.T) {
+	settings := (Settings{}).withDefaults()
+	if settings.ApplicationID != DefaultApplicationID {
+		t.Fatalf("default application ID = %q", settings.ApplicationID)
+	}
+	settings = (Settings{ApplicationID: " 123 "}).withDefaults()
+	if settings.ApplicationID != "123" {
+		t.Fatalf("application override = %q", settings.ApplicationID)
+	}
+}
+
 type fakeConnection struct {
 	in     chan []byte
 	out    chan []byte

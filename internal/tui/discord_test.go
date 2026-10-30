@@ -109,7 +109,7 @@ func TestDiscordStopsSharingEvenWhenSignOutCannotBeSaved(t *testing.T) {
 	}
 }
 
-func TestDiscordArtworkTogglePersistsAndExplainsApplicationRequirement(t *testing.T) {
+func TestDiscordArtworkUsesShippedApplication(t *testing.T) {
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	presence := &fakeDiscord{}
 	model := New(nil, store, "", "mpv", WithDiscordPresence(presence))
@@ -122,8 +122,11 @@ func TestDiscordArtworkTogglePersistsAndExplainsApplicationRequirement(t *testin
 	if !config.DiscordPreferences().ShowArtwork || !presence.settings.ShowArtwork {
 		t.Fatal("poster artwork toggle was not persisted and applied")
 	}
-	if !strings.Contains(model.discordView(), "Poster artwork needs application_id") {
-		t.Fatal("artwork screen did not explain the application requirement")
+	if presence.settings.ApplicationID != discord.DefaultApplicationID {
+		t.Fatalf("application ID = %q", presence.settings.ApplicationID)
+	}
+	if strings.Contains(model.discordView(), "needs application_id") {
+		t.Fatal("artwork screen requested an application ID from the user")
 	}
 }
 

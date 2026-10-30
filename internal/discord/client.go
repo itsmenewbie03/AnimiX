@@ -11,11 +11,21 @@ import (
 type Settings struct {
 	Enabled, ShowBrowsing bool
 	Token                 string
-	// ApplicationID is the user's registered Discord application. Omitting it
-	// produces text-only payloads. AnimiX never borrows another app ID.
+	// ApplicationID optionally overrides AnimiX's public Discord application ID.
 	ApplicationID string
 	LargeImage    string
 	ShowArtwork   bool
+}
+
+const DefaultApplicationID = "1565699349026054264"
+
+func (settings Settings) withDefaults() Settings {
+	settings.Token = strings.TrimSpace(settings.Token)
+	settings.ApplicationID = strings.TrimSpace(settings.ApplicationID)
+	if settings.ApplicationID == "" {
+		settings.ApplicationID = DefaultApplicationID
+	}
+	return settings
 }
 
 type State string
@@ -86,8 +96,7 @@ func newClient(ctx context.Context, deps dependencies) *Client {
 // Configure is also an explicit retry after an authentication/protocol error.
 // A saved token by itself never enables sharing.
 func (c *Client) Configure(settings Settings) {
-	settings.Token = strings.TrimSpace(settings.Token)
-	settings.ApplicationID = strings.TrimSpace(settings.ApplicationID)
+	settings = settings.withDefaults()
 	c.mu.Lock()
 	if !c.closed {
 		c.settings = settings

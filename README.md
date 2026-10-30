@@ -417,20 +417,19 @@ an unavailable cover never delays the title and episode/chapter text. Linked
 titles prefer AniList's CDN cover because some extension image hosts reject
 Discord's image proxy; unlinked titles fall back to the extension poster.
 
-Preferences live in `config.toml`. Optional branding uses a Discord application
-you register in the [Developer Portal](https://discord.com/developers/applications):
+Preferences live in `config.toml`. AnimiX ships its public Discord application
+ID, so users do not need to register an application:
 
 ```toml
 [discord]
 enabled = false
 show_browsing = false
-# application_id = "YOUR_NUMERIC_APPLICATION_ID"
-# large_image = "animix" # An uploaded asset key for that application
 show_artwork = false
 ```
 
-With `application_id` configured, linked titles include an AniList button.
-Clicking a linked title's poster also opens its AniList page.
+Linked titles include an AniList button, and clicking their poster opens the
+same AniList page. Developers may override `application_id` and `large_image`
+to test another Discord application and uploaded fallback asset.
 `show_artwork = true` enables conversion of public HTTPS cover URLs through
 Discord's external-assets endpoint; missing or failed artwork falls back to
 `large_image`, then text. After editing settings, press `r` or restart AnimiX.
@@ -444,8 +443,7 @@ included.
 Connection status and “last activity sent” describe transport state, not a
 rendering acknowledgment. The user-session protocol and optional artwork/button
 formats can change; live Discord rendering has not yet been validated with an
-independent account. See the [Gateway research notes](docs/research/discord-gateway-presence.md)
-for protocol details and the reference implementation audit.
+independent account.
 
 ## 🧪 Tests
 

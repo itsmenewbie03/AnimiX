@@ -30,9 +30,13 @@ func WithAppContext(ctx context.Context) Option {
 
 func discordSettings(config appconfig.Config) discord.Settings {
 	prefs := config.DiscordPreferences()
+	applicationID := strings.TrimSpace(prefs.ApplicationID)
+	if applicationID == "" {
+		applicationID = discord.DefaultApplicationID
+	}
 	return discord.Settings{
 		Enabled: prefs.Enabled, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
-		ApplicationID: prefs.ApplicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork,
+		ApplicationID: applicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork,
 	}
 }
 

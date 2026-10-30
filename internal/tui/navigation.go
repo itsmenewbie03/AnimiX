@@ -185,6 +185,7 @@ var keyHelpSections = []keyHelpSection{
 		{"d", "Discover with a source"},
 		{"r", "Extension repositories"},
 		{"t", "AniList"},
+		{"p", "Discord presence"},
 	}},
 	{title: "ANIME & PLAYBACK", bindings: [][2]string{
 		{"a", "Use an alternative title"},

@@ -14,7 +14,7 @@ import (
 const endpoint = "https://graphql.anilist.co"
 const episodeMetadataEndpoint = "https://api.ani.zip/mappings"
 
-const AuthorizeURL = "https://anilist.co/api/v2/oauth/authorize?client_id=35224&response_type=token"
+const AuthorizeURL = "https://anilist.co/api/v2/oauth/authorize?client_id=55435&response_type=token"
 
 type Client struct {
 	http                    *http.Client
@@ -31,6 +31,7 @@ type Entry struct {
 	ID                int
 	MediaID           int
 	MALID             int
+	CoverURL          string
 	Title             string
 	EnglishTitle      string
 	RomajiTitle       string
@@ -149,10 +150,10 @@ func (c *Client) Library(ctx context.Context, token string) (Library, error) {
 	const query = `
 query ($userId: Int!) {
   anime: MediaListCollection(userId: $userId, type: ANIME, sort: UPDATED_TIME) {
-    lists { entries { id status progress updatedAt media { id idMal type status title { userPreferred english romaji native } synonyms episodes chapters nextAiringEpisode { episode airingAt } startDate { year month day } endDate { year month day } } } }
+    lists { entries { id status progress updatedAt media { id idMal type status title { userPreferred english romaji native } coverImage { extraLarge large medium } synonyms episodes chapters nextAiringEpisode { episode airingAt } startDate { year month day } endDate { year month day } } } }
   }
   manga: MediaListCollection(userId: $userId, type: MANGA, sort: UPDATED_TIME) {
-    lists { entries { id status progress updatedAt media { id type title { userPreferred english romaji native } synonyms episodes chapters nextAiringEpisode { episode } } } }
+    lists { entries { id status progress updatedAt media { id type title { userPreferred english romaji native } coverImage { extraLarge large medium } synonyms episodes chapters nextAiringEpisode { episode } } } }
   }
 }`
 	type media struct {
@@ -168,6 +169,11 @@ query ($userId: Int!) {
 			Romaji        string `json:"romaji"`
 			Native        string `json:"native"`
 		} `json:"title"`
+		CoverImage struct {
+			ExtraLarge string `json:"extraLarge"`
+			Large      string `json:"large"`
+			Medium     string `json:"medium"`
+		} `json:"coverImage"`
 		Synonyms          []string `json:"synonyms"`
 		NextAiringEpisode *struct {
 			Episode  int   `json:"episode"`
@@ -218,6 +224,7 @@ query ($userId: Int!) {
 			}
 			result.Entries = append(result.Entries, Entry{
 				ID: item.ID, MediaID: item.Media.ID, MALID: item.Media.IDMal, Title: item.Media.Title.UserPreferred,
+				CoverURL:     firstNonEmpty(item.Media.CoverImage.ExtraLarge, item.Media.CoverImage.Large, item.Media.CoverImage.Medium),
 				EnglishTitle: item.Media.Title.English, RomajiTitle: item.Media.Title.Romaji,
 				NativeTitle: item.Media.Title.Native, Synonyms: item.Media.Synonyms,
 				Type: item.Media.Type, Status: item.Status, MediaStatus: item.Media.Status, UpdatedAt: item.UpdatedAt,

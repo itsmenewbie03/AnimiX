@@ -19,6 +19,8 @@ func (m Model) View() string {
 	body.WriteString("\n\n")
 
 	switch m.stage {
+	case stageDiscord, stageDiscordToken:
+		body.WriteString(m.discordView())
 	case stageSources:
 		body.WriteString(m.sourcesView())
 	case stageDiscoverSources:
@@ -406,7 +408,7 @@ func homeFeedEmptyMessage(feed homeFocus) string {
 }
 
 func homeHelp(hasItems bool) string {
-	controls := "d discover • r repositories • t AniList • ? help • q quit"
+	controls := "d discover • r repositories • t AniList • p Discord • ? help • q quit"
 	if hasItems {
 		controls = "j/k move • gg/G first/last • enter open • / filter • " + controls
 	}
@@ -532,6 +534,9 @@ func (m Model) listHelp(action string) string {
 }
 
 func (m Model) breadcrumb() string {
+	if m.stage == stageDiscord || m.stage == stageDiscordToken {
+		return "Home › Discord"
+	}
 	if m.stage == stageAutoPlayPrompt {
 		return "Home › Playback › Next episode"
 	}

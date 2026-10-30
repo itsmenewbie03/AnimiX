@@ -3,6 +3,7 @@ package mangareader
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -96,7 +97,8 @@ func TestBrowserReaderServesPagesAndReportsProgress(t *testing.T) {
 		t.Fatalf("favicon status = %d", faviconResponse.StatusCode)
 	}
 
-	progressResponse, err := http.Post(opened.URL+"/progress", "application/json", bytes.NewBufferString(`{"page":2}`))
+	progressBody := fmt.Sprintf(`{"page":2,"document":%q,"sequence":1,"visible":true}`, readerDocumentID(t, body))
+	progressResponse, err := http.Post(opened.URL+"/progress", "application/json", bytes.NewBufferString(progressBody))
 	if err != nil {
 		t.Fatal(err)
 	}

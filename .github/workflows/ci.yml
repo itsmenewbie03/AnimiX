@@ -23,3 +23,30 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      - name: Presence race checks
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race ./internal/discord ./internal/player ./internal/config ./internal/mangareader ./internal/tui
+
+  native-presence:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test presence and native mpv IPC
+        run: go test ./internal/discord ./internal/player ./internal/config ./internal/mangareader ./internal/tui
+
+      - name: Build without CGO
+        env:
+          CGO_ENABLED: '0'
+        run: go build ./...

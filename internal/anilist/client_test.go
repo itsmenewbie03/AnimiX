@@ -23,7 +23,7 @@ func TestLibraryAndUpdate(t *testing.T) {
 		case 1:
 			fmt.Fprint(response, `{"data":{"Viewer":{"id":7,"name":"tester"}}}`)
 		case 2:
-			fmt.Fprint(response, `{"data":{"anime":{"lists":[{"entries":[{"id":10,"status":"CURRENT","progress":3,"media":{"id":99,"type":"ANIME","status":"RELEASING","title":{"userPreferred":"Example","english":"Example English","romaji":"Example Romaji","native":"例"},"synonyms":["Example Alt"],"episodes":12,"chapters":null,"nextAiringEpisode":{"episode":7,"airingAt":1800000000},"startDate":{"year":2026,"month":10,"day":1},"endDate":{"year":2027,"month":3,"day":4}}}]}]},"manga":{"lists":[]}}}`)
+			fmt.Fprint(response, `{"data":{"anime":{"lists":[{"entries":[{"id":10,"status":"CURRENT","progress":3,"media":{"id":99,"type":"ANIME","status":"RELEASING","title":{"userPreferred":"Example","english":"Example English","romaji":"Example Romaji","native":"例"},"coverImage":{"extraLarge":"https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/example.jpg"},"synonyms":["Example Alt"],"episodes":12,"chapters":null,"nextAiringEpisode":{"episode":7,"airingAt":1800000000},"startDate":{"year":2026,"month":10,"day":1},"endDate":{"year":2027,"month":3,"day":4}}}]}]},"manga":{"lists":[]}}}`)
 		case 3:
 			fmt.Fprint(response, `{"data":{"SaveMediaListEntry":{"id":10,"status":"COMPLETED","progress":12}}}`)
 		default:
@@ -44,6 +44,9 @@ func TestLibraryAndUpdate(t *testing.T) {
 	entry := library.Entries[0]
 	if entry.EnglishTitle != "Example English" || entry.RomajiTitle != "Example Romaji" || entry.NativeTitle != "例" || len(entry.Synonyms) != 1 || entry.Synonyms[0] != "Example Alt" {
 		t.Fatalf("title variants = %#v", entry)
+	}
+	if entry.CoverURL != "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/example.jpg" {
+		t.Fatalf("cover URL = %q", entry.CoverURL)
 	}
 	if entry.MediaStatus != "RELEASING" || entry.NextAiringEpisode == nil || entry.NextAiringEpisode.AiringAt != 1800000000 {
 		t.Fatalf("release metadata = %#v", entry)

@@ -35,9 +35,17 @@ type OpenedSession struct {
 }
 
 type ProgressEvent struct {
-	SessionID string
-	Page      int
-	Total     int
+	SessionID    string
+	Page         int
+	Total        int
+	SeenAt       time.Time
+	Visible      bool
+	PresenceOnly bool
+}
+
+type documentState struct {
+	id       string
+	sequence uint64
 }
 
 type BrowserReader struct {
@@ -45,19 +53,22 @@ type BrowserReader struct {
 	client  *http.Client
 	events  chan ProgressEvent
 
-	mutex    sync.RWMutex
-	sessions map[string]Session
-	listener net.Listener
-	server   *http.Server
-	baseURL  string
+	mutex     sync.RWMutex
+	sessions  map[string]Session
+	documents map[string]documentState
+	listener  net.Listener
+	server    *http.Server
+	baseURL   string
+	closed    bool
 }
 
 func New(openURL func(string) error) *BrowserReader {
 	return &BrowserReader{
-		openURL:  openURL,
-		client:   &http.Client{Timeout: 30 * time.Second},
-		events:   make(chan ProgressEvent, 1),
-		sessions: make(map[string]Session),
+		openURL:   openURL,
+		client:    &http.Client{Timeout: 30 * time.Second},
+		events:    make(chan ProgressEvent, 1),
+		sessions:  make(map[string]Session),
+		documents: make(map[string]documentState),
 	}
 }
 
@@ -66,6 +77,7 @@ func (reader *BrowserReader) Events() <-chan ProgressEvent { return reader.event
 func (reader *BrowserReader) CloseSession(id string) error {
 	reader.mutex.Lock()
 	delete(reader.sessions, id)
+	delete(reader.documents, id)
 	if len(reader.sessions) > 0 || reader.server == nil {
 		reader.mutex.Unlock()
 		return nil
@@ -90,10 +102,15 @@ func (reader *BrowserReader) Open(session Session) (OpenedSession, error) {
 	if err != nil {
 		return OpenedSession{}, fmt.Errorf("create manga reader session: %w", err)
 	}
-	if err := reader.start(); err != nil {
+	reader.mutex.Lock()
+	if reader.closed {
+		reader.mutex.Unlock()
+		return OpenedSession{}, fmt.Errorf("open manga reader: reader is closed")
+	}
+	if err := reader.startLocked(); err != nil {
+		reader.mutex.Unlock()
 		return OpenedSession{}, err
 	}
-	reader.mutex.Lock()
 	reader.sessions[id] = session
 	url := reader.baseURL + "/session/" + id
 	reader.mutex.Unlock()
@@ -108,9 +125,9 @@ func (reader *BrowserReader) Open(session Session) (OpenedSession, error) {
 	return OpenedSession{ID: id, URL: url}, nil
 }
 
-func (reader *BrowserReader) start() error {
-	reader.mutex.Lock()
-	defer reader.mutex.Unlock()
+// startLocked and session registration share a lock so closing the reader
+// cannot leave a newly opened session without a listener.
+func (reader *BrowserReader) startLocked() error {
 	if reader.server != nil {
 		return nil
 	}
@@ -132,12 +149,14 @@ func (reader *BrowserReader) start() error {
 
 func (reader *BrowserReader) Close() error {
 	reader.mutex.Lock()
+	reader.closed = true
 	server := reader.server
 	listener := reader.listener
 	reader.server = nil
 	reader.listener = nil
 	reader.baseURL = ""
 	reader.sessions = make(map[string]Session)
+	reader.documents = make(map[string]documentState)
 	reader.mutex.Unlock()
 	if server == nil {
 		return nil
@@ -149,6 +168,9 @@ func shutdownServer(server *http.Server, listener net.Listener) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	shutdownErr := server.Shutdown(ctx)
+	if shutdownErr != nil {
+		_ = server.Close() // Cancel outstanding image requests after the grace period.
+	}
 	if listener != nil {
 		if closeErr := listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && shutdownErr == nil {
 			return closeErr
@@ -190,14 +212,28 @@ func (reader *BrowserReader) serveHTTP(response http.ResponseWriter, request *ht
 }
 
 func (reader *BrowserReader) render(response http.ResponseWriter, id string, session Session) {
+	document, err := randomID()
+	if err != nil {
+		http.Error(response, "create reader document", http.StatusInternalServerError)
+		return
+	}
+	reader.mutex.Lock()
+	if _, exists := reader.sessions[id]; !exists {
+		reader.mutex.Unlock()
+		http.Error(response, "reader session closed", http.StatusNotFound)
+		return
+	}
+	reader.documents[id] = documentState{id: document}
+	reader.mutex.Unlock()
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
 	data := struct {
 		Session
-		ID      string
-		Indexes []int
-	}{Session: session, ID: id, Indexes: make([]int, len(session.Pages))}
+		ID       string
+		Document string
+		Indexes  []int
+	}{Session: session, ID: id, Document: document, Indexes: make([]int, len(session.Pages))}
 	for index := range data.Indexes {
 		data.Indexes[index] = index + 1
 	}
@@ -241,11 +277,15 @@ func (reader *BrowserReader) proxyPage(response http.ResponseWriter, request *ht
 func (reader *BrowserReader) recordProgress(response http.ResponseWriter, request *http.Request, id string, total int) {
 	defer request.Body.Close()
 	var payload struct {
-		Page int `json:"page"`
+		Page         int    `json:"page"`
+		Document     string `json:"document"`
+		Sequence     uint64 `json:"sequence"`
+		Visible      bool   `json:"visible"`
+		PresenceOnly bool   `json:"presence_only"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(request.Body, 1024))
-	if err := decoder.Decode(&payload); err != nil || payload.Page < 1 || payload.Page > total {
-		http.Error(response, "invalid page", http.StatusBadRequest)
+	if err := decoder.Decode(&payload); err != nil || payload.Page < 1 || payload.Page > total || payload.Document == "" || payload.Sequence == 0 {
+		http.Error(response, "invalid reader progress", http.StatusBadRequest)
 		return
 	}
 	reader.mutex.Lock()
@@ -255,10 +295,25 @@ func (reader *BrowserReader) recordProgress(response http.ResponseWriter, reques
 		http.NotFound(response, request)
 		return
 	}
+	document := reader.documents[id]
+	if document.id != payload.Document {
+		reader.mutex.Unlock()
+		http.Error(response, "reader reopened in another tab", http.StatusConflict)
+		return
+	}
+	if payload.Sequence <= document.sequence {
+		reader.mutex.Unlock()
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	document.sequence = payload.Sequence
+	reader.documents[id] = document
 	session.StartPage = payload.Page
 	reader.sessions[id] = session
-	reader.mutex.Unlock()
-	event := ProgressEvent{SessionID: id, Page: payload.Page, Total: total}
+	event := ProgressEvent{
+		SessionID: id, Page: payload.Page, Total: total, SeenAt: time.Now(),
+		Visible: payload.Visible, PresenceOnly: payload.PresenceOnly,
+	}
 	select {
 	case reader.events <- event:
 	default:
@@ -271,6 +326,7 @@ func (reader *BrowserReader) recordProgress(response http.ResponseWriter, reques
 		default:
 		}
 	}
+	reader.mutex.Unlock()
 	response.WriteHeader(http.StatusNoContent)
 }
 
@@ -308,6 +364,8 @@ main { width: min(100%, 1100px); margin: 0 auto; padding: 72px 0 40px; }
 <script>
 const total = {{len .Pages}};
 const start = {{.StartPage}};
+const documentID = {{.Document}};
+let sequence = 0;
 history.scrollRestoration = 'manual';
 const pages = Array.from(document.querySelectorAll('.page'));
 const startPage = pages[start - 1];
@@ -319,12 +377,23 @@ let lastScrollY = window.scrollY;
 const controls = document.getElementById('controls');
 function showControls() { controls.classList.remove('controls-hidden'); }
 function hideControls() { controls.classList.add('controls-hidden'); }
+function presence(visible = document.visibilityState === 'visible', presenceOnly = true) {
+  fetch('/session/{{.ID}}/progress', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({page:current || start, document:documentID, sequence:++sequence, visible, presence_only:presenceOnly}), keepalive:true}).catch(() => {});
+}
 function report(page) {
   if (page === current) return;
   current = page;
   document.getElementById('counter').textContent = page + '/' + total;
-  fetch('/session/{{.ID}}/progress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({page}), keepalive:true}).catch(() => {});
+  presence(document.visibilityState === 'visible', false);
 }
+// A stationary page is still being read. Visibility and a bounded server-side
+// presence lease handle background tabs, tab closure, and lost pagehide beacons.
+setInterval(() => presence(), 15000);
+document.addEventListener('visibilitychange', () => presence());
+window.addEventListener('pagehide', () => presence(false));
+window.addEventListener('pageshow', () => presence());
+presence();
 
 // Keep the same page at the same viewport offset when an image above it grows.
 // Remember our own scroll changes so they cannot become reading progress.

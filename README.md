@@ -191,6 +191,7 @@ a text field for the complete categorized shortcut reference.
 | `/` / `c`                              | Filter the active Home feed / clear its filter       |
 | `d`                                    | Open Discover and search with an installed source    |
 | `t`                                    | Connect or manage AniList tracking                   |
+| `p`                                    | Manage Discord presence from Home                   |
 | `r`                                    | Manage extension repositories                        |
 | `space`                                | Toggle **Remember server** on the stream screen      |
 | `a` / `s`                              | Search an alternative title / change source          |
@@ -382,6 +383,70 @@ progress or status, then save it back to [AniList](https://anilist.co). Tokens
 are stored in the CLI configuration file with user-only permissions. Press `x`
 from the library to sign out.
 
+## 💬 Discord Presence
+
+Discord sharing is **off by default**. From Home, press `p`, then `t` to paste a
+Discord **user-session token** into the masked input. Press `Enter` to save it,
+then `e` to enable sharing. Saving a token preserves the sharing preference.
+
+AnimiX connects directly to the Discord Gateway in Go on Linux, macOS, and
+Windows; the Discord desktop app can be closed. This is an unofficial
+user-session integration: ordinary OAuth access tokens and bot tokens cannot
+publish your personal activity through this connection.
+
+On the Discord screen:
+
+| Key | Action |
+| --- | --- |
+| `e` | Enable or disable sharing |
+| `t` | Set or replace the token |
+| `b` | Toggle optional “Browsing AnimiX” activity |
+| `a` | Toggle anime/manga poster artwork |
+| `r` | Retry the connection and reload Discord settings |
+| `x` | Forget the token and disable sharing |
+
+Watching activity follows mpv's episode, position, speed, pause, and buffering
+state while the TUI is suspended. Reading activity includes the chapter and
+page; hidden tabs stop advertising reading, and a lost or closed tab expires
+within a minute. Network interruptions reconnect automatically and replay the
+latest activity. Updates are coalesced to respect Discord's send limits.
+
+When poster artwork is enabled, watching uses the anime cover and reading uses
+the manga cover as the activity's large image. Artwork loads independently, so
+an unavailable cover never delays the title and episode/chapter text. Linked
+titles prefer AniList's CDN cover because some extension image hosts reject
+Discord's image proxy; unlinked titles fall back to the extension poster.
+
+Preferences live in `config.toml`. Optional branding uses a Discord application
+you register in the [Developer Portal](https://discord.com/developers/applications):
+
+```toml
+[discord]
+enabled = false
+show_browsing = false
+# application_id = "YOUR_NUMERIC_APPLICATION_ID"
+# large_image = "animix" # An uploaded asset key for that application
+show_artwork = false
+```
+
+With `application_id` configured, linked titles include an AniList button.
+Clicking a linked title's poster also opens its AniList page.
+`show_artwork = true` enables conversion of public HTTPS cover URLs through
+Discord's external-assets endpoint; missing or failed artwork falls back to
+`large_image`, then text. After editing settings, press `r` or restart AnimiX.
+
+The token is stored unencrypted in managed `state.json`, alongside other account
+credentials, with owner-only (`0600`) permissions on Unix. It is excluded from
+the editable TOML and connection diagnostics. Presence uses title metadata;
+stream URLs, playback headers, source cookies, and loopback reader URLs are not
+included.
+
+Connection status and “last activity sent” describe transport state, not a
+rendering acknowledgment. The user-session protocol and optional artwork/button
+formats can change; live Discord rendering has not yet been validated with an
+independent account. See the [Gateway research notes](docs/research/discord-gateway-presence.md)
+for protocol details and the reference implementation audit.
+
 ## 🧪 Tests
 
 Run the suite and the vet checks from the project root:
@@ -389,6 +454,7 @@ Run the suite and the vet checks from the project root:
 ```sh
 go test ./...
 go vet ./...
+CGO_ENABLED=1 go test -race ./internal/discord ./internal/player ./internal/mangareader ./internal/tui
 ```
 
 ## 📌 Current Scope
@@ -404,6 +470,7 @@ go vet ./...
 - Local Manga Resume with exact chapter/page restoration
 - Ad-free system-browser manga reader with header-aware image proxying
 - AniList anime/manga library and tracking updates
+- Opt-in direct Discord Gateway presence for watching and reading
 
 MAL/Simkl tracking, CloudStream repository management, media downloads, and an
 embedded terminal manga reader are not implemented yet.

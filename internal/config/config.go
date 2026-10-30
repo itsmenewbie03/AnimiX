@@ -19,6 +19,8 @@ type Repository struct {
 type Config struct {
 	Repositories          []Repository          `json:"repositories" toml:"repositories"`
 	AniListToken          string                `json:"anilistToken,omitempty" toml:"anilist_token,omitempty"`
+	DiscordToken          string                `json:"discordToken,omitempty" toml:"discord_token,omitempty"`
+	Discord               *DiscordSettings      `json:"discord,omitempty" toml:"discord,omitempty"`
 	ContinueWatching      []ContinueEntry       `json:"continueWatching,omitempty" toml:"continue_watching,omitempty"`
 	MangaReading          []MangaReadingEntry   `json:"mangaReading,omitempty" toml:"manga_reading,omitempty"`
 	ActiveSources         map[string]string     `json:"activeSources,omitempty" toml:"active_sources,omitempty"`
@@ -31,6 +33,22 @@ type Config struct {
 }
 
 func (c Config) UpdatesEnabled() bool { return c.CheckUpdates == nil || *c.CheckUpdates }
+
+// Discord sharing is opt-in, including when a credential has already been saved.
+type DiscordSettings struct {
+	Enabled       bool   `json:"enabled" toml:"enabled"`
+	ShowBrowsing  bool   `json:"showBrowsing" toml:"show_browsing"`
+	ApplicationID string `json:"applicationId,omitempty" toml:"application_id,omitempty"`
+	LargeImage    string `json:"largeImage,omitempty" toml:"large_image,omitempty"`
+	ShowArtwork   bool   `json:"showArtwork,omitempty" toml:"show_artwork,omitempty"`
+}
+
+func (c Config) DiscordPreferences() DiscordSettings {
+	if c.Discord == nil {
+		return DiscordSettings{}
+	}
+	return *c.Discord
+}
 
 type ResumeAniListSyncMode string
 
@@ -109,6 +127,7 @@ type StreamPreference struct {
 
 type ContinueEntry struct {
 	Title              string            `json:"title" toml:"title"`
+	CoverURL           string            `json:"coverUrl,omitempty" toml:"cover_url,omitempty"`
 	SourceID           string            `json:"sourceId" toml:"source_id"`
 	SourceName         string            `json:"sourceName" toml:"source_name"`
 	MediaURL           string            `json:"mediaUrl" toml:"media_url"`
@@ -135,6 +154,7 @@ type ContinueEntry struct {
 
 type MangaReadingEntry struct {
 	Title            string `json:"title" toml:"title"`
+	CoverURL         string `json:"coverUrl,omitempty" toml:"cover_url,omitempty"`
 	SourceID         string `json:"sourceId" toml:"source_id"`
 	SourceName       string `json:"sourceName,omitempty" toml:"source_name,omitempty"`
 	MediaURL         string `json:"mediaUrl" toml:"media_url"`
@@ -318,6 +338,7 @@ func NewStore(path string) *Store {
 }
 
 type settings struct {
+	Discord               *DiscordSettings      `toml:"discord,omitempty"`
 	CheckUpdates          *bool                 `toml:"check_updates,omitempty"`
 	AutoPlayNextEpisode   *bool                 `toml:"auto_play_next_episode,omitempty"`
 	SyncResumeWithAniList ResumeAniListSyncMode `toml:"sync_resume_with_anilist,omitempty"`
@@ -326,6 +347,7 @@ type settings struct {
 type state struct {
 	Repositories      []Repository        `json:"repositories"`
 	AniListToken      string              `json:"anilistToken,omitempty"`
+	DiscordToken      string              `json:"discordToken,omitempty"`
 	ContinueWatching  []ContinueEntry     `json:"continueWatching,omitempty"`
 	MangaReading      []MangaReadingEntry `json:"mangaReading,omitempty"`
 	ActiveSources     map[string]string   `json:"activeSources,omitempty"`
@@ -347,6 +369,7 @@ func (s *Store) Load() (Config, error) {
 		result.CheckUpdates = values.CheckUpdates
 		result.AutoPlayNextEpisode = values.AutoPlayNextEpisode
 		result.SyncResumeWithAniList = values.SyncResumeWithAniList
+		result.Discord = values.Discord
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
 	}
@@ -379,6 +402,7 @@ func (s *Store) writeSettings(config Config) error {
 		return err
 	}
 	encodeErr := toml.NewEncoder(file).Encode(settings{
+		Discord:      config.Discord,
 		CheckUpdates: config.CheckUpdates, AutoPlayNextEpisode: config.AutoPlayNextEpisode,
 		SyncResumeWithAniList: config.SyncResumeWithAniList,
 	})
@@ -472,13 +496,14 @@ func (s *Store) migrateLegacyData() error {
 }
 
 func hasManagedState(config Config) bool {
-	return len(config.Repositories) > 0 || config.AniListToken != "" || len(config.ContinueWatching) > 0 || len(config.MangaReading) > 0 ||
+	return len(config.Repositories) > 0 || config.AniListToken != "" || config.DiscordToken != "" || len(config.ContinueWatching) > 0 || len(config.MangaReading) > 0 ||
 		len(config.ActiveSources) > 0 || len(config.MediaMappings) > 0 ||
 		len(config.SourceCredentials) > 0 || len(config.StreamPreferences) > 0
 }
 
 func stateFromConfig(config Config) state {
 	return state{
+		DiscordToken: config.DiscordToken,
 		Repositories: config.Repositories, AniListToken: config.AniListToken,
 		ContinueWatching: config.ContinueWatching, ActiveSources: config.ActiveSources,
 		MangaReading:  config.MangaReading,
@@ -488,6 +513,7 @@ func stateFromConfig(config Config) state {
 }
 
 func applyState(config *Config, values state) {
+	config.DiscordToken = values.DiscordToken
 	config.Repositories, config.AniListToken = values.Repositories, values.AniListToken
 	config.ContinueWatching, config.ActiveSources = values.ContinueWatching, values.ActiveSources
 	config.MangaReading = values.MangaReading

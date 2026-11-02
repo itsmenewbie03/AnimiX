@@ -227,7 +227,7 @@ func (c *ipcClient) run(ctx context.Context) {
 		}
 
 		if conn != nil {
-			value := formatActivity(settings, snapshot, settings.LargeImage, now)
+			value := formatActivity(settings, snapshot, ipcImage(settings, snapshot), now)
 			payload := ipcActivityPayload(value)
 			if !bytes.Equal(payload, lastPayload) {
 				nonce++
@@ -265,6 +265,15 @@ func (c *ipcClient) run(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+// ipcImage chooses the large image for local RPC. The desktop client fetches
+// public image URLs itself, so source posters do not need Gateway conversion.
+func ipcImage(settings Settings, snapshot Snapshot) string {
+	if settings.ShowArtwork && publicImage(snapshot.CoverURL) {
+		return snapshot.CoverURL
+	}
+	return settings.LargeImage
 }
 
 func ipcHandshake(ctx context.Context, conn net.Conn, applicationID string) error {

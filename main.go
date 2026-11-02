@@ -200,7 +200,7 @@ func run() error {
 	}
 	presence.Configure(discord.Settings{
 		Enabled: prefs.Enabled, Transport: transport, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
-		ApplicationID: prefs.ApplicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork && transport != discord.TransportIPC,
+		ApplicationID: prefs.ApplicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ArtworkEnabled(),
 	})
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 3*time.Second)

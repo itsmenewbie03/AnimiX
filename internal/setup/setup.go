@@ -149,6 +149,8 @@ func (s Service) linkAccounts(ctx context.Context, out io.Writer) error {
 		preferences.Transport = "ipc"
 		preferences.Enabled = enable
 		preferences.AutoDisabled = false
+		showArtwork := true
+		preferences.ShowArtwork = &showArtwork
 		config.Discord = &preferences
 		if err := s.Store.Save(config); err != nil {
 			return fmt.Errorf("save Discord Rich Presence preference: %w", err)

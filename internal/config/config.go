@@ -55,6 +55,7 @@ func (c Config) ExtensionRequestTimeout() time.Duration {
 }
 
 // Discord sharing is opt-in, including when a credential has already been saved.
+// Poster artwork defaults on, but only produces activity while sharing is enabled.
 type DiscordSettings struct {
 	Enabled       bool   `json:"enabled" toml:"enabled"`
 	Transport     string `json:"transport,omitempty" toml:"transport,omitempty"`
@@ -62,7 +63,11 @@ type DiscordSettings struct {
 	ShowBrowsing  bool   `json:"showBrowsing" toml:"show_browsing"`
 	ApplicationID string `json:"applicationId,omitempty" toml:"application_id,omitempty"`
 	LargeImage    string `json:"largeImage,omitempty" toml:"large_image,omitempty"`
-	ShowArtwork   bool   `json:"showArtwork,omitempty" toml:"show_artwork,omitempty"`
+	ShowArtwork   *bool  `json:"showArtwork,omitempty" toml:"show_artwork,omitempty"`
+}
+
+func (s DiscordSettings) ArtworkEnabled() bool {
+	return s.ShowArtwork == nil || *s.ShowArtwork
 }
 
 func (c Config) DiscordPreferences() DiscordSettings {

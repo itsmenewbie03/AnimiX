@@ -152,6 +152,9 @@ func TestRunLinksAniListAndOffersOfficialDiscordIPC(t *testing.T) {
 	if store.config.Discord == nil || !store.config.Discord.Enabled || store.config.Discord.Transport != "ipc" {
 		t.Fatalf("official Discord IPC was not enabled: %#v", store.config.Discord)
 	}
+	if !store.config.Discord.ArtworkEnabled() {
+		t.Fatal("setup did not keep poster artwork on by default")
+	}
 	if store.saves != 2 {
 		t.Fatalf("account steps saved %d times, want 2 independently resumable saves", store.saves)
 	}

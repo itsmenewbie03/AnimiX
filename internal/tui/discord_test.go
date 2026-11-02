@@ -153,7 +153,9 @@ func TestDiscordStopsSharingEvenWhenSignOutCannotBeSaved(t *testing.T) {
 func TestDiscordArtworkUsesShippedApplication(t *testing.T) {
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	if err := store.Save(appconfig.Config{
-		DiscordToken: "fixture", Discord: &appconfig.DiscordSettings{Transport: string(discord.TransportGateway)},
+		DiscordToken: "fixture", Discord: &appconfig.DiscordSettings{
+			Transport: string(discord.TransportGateway), ShowArtwork: boolPointer(false),
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +167,7 @@ func TestDiscordArtworkUsesShippedApplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.DiscordPreferences().ShowArtwork || !presence.settings.ShowArtwork {
+	if !config.DiscordPreferences().ArtworkEnabled() || !presence.settings.ShowArtwork {
 		t.Fatal("poster artwork toggle was not persisted and applied")
 	}
 	if presence.settings.ApplicationID != discord.DefaultApplicationID {
@@ -173,6 +175,53 @@ func TestDiscordArtworkUsesShippedApplication(t *testing.T) {
 	}
 	if strings.Contains(model.discordView(), "needs application_id") {
 		t.Fatal("artwork screen requested an application ID from the user")
+	}
+}
+
+func TestDiscordArtworkDefaultsOnAndCanBeDisabled(t *testing.T) {
+	settings := discordSettings(appconfig.Config{})
+	if settings.Enabled {
+		t.Fatal("Discord sharing must default off")
+	}
+	if !settings.ShowArtwork {
+		t.Fatal("poster artwork must default on")
+	}
+	disabled := false
+	settings = discordSettings(appconfig.Config{Discord: &appconfig.DiscordSettings{ShowArtwork: &disabled}})
+	if settings.ShowArtwork {
+		t.Fatal("explicit poster artwork opt-out was ignored")
+	}
+}
+
+func TestDiscordArtworkToggleWorksForIPC(t *testing.T) {
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	if err := store.Save(appconfig.Config{
+		Discord: &appconfig.DiscordSettings{
+			Enabled: true, Transport: string(discord.TransportIPC), ShowArtwork: boolPointer(false),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	presence := &fakeDiscord{}
+	model := New(nil, store, "", "mpv", WithDiscordPresence(presence))
+	model.loading, model.stage = false, stageDiscord
+	model = discordKey(model, "a")
+	if model.err != nil {
+		t.Fatalf("IPC artwork toggle failed: %v", model.err)
+	}
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.DiscordPreferences().ArtworkEnabled() || !presence.settings.ShowArtwork {
+		t.Fatal("IPC poster artwork toggle was not persisted and applied")
+	}
+	view := model.discordView()
+	if strings.Contains(view, "Poster status:") {
+		t.Fatal("IPC view showed a Gateway artwork status")
+	}
+	if !strings.Contains(view, "source cover through local IPC") {
+		t.Fatal("IPC view did not explain poster artwork")
 	}
 }
 

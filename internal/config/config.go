@@ -37,6 +37,8 @@ func (c Config) UpdatesEnabled() bool { return c.CheckUpdates == nil || *c.Check
 // Discord sharing is opt-in, including when a credential has already been saved.
 type DiscordSettings struct {
 	Enabled       bool   `json:"enabled" toml:"enabled"`
+	Transport     string `json:"transport,omitempty" toml:"transport,omitempty"`
+	AutoDisabled  bool   `json:"autoDisabled,omitempty" toml:"auto_disabled,omitempty"`
 	ShowBrowsing  bool   `json:"showBrowsing" toml:"show_browsing"`
 	ApplicationID string `json:"applicationId,omitempty" toml:"application_id,omitempty"`
 	LargeImage    string `json:"largeImage,omitempty" toml:"large_image,omitempty"`

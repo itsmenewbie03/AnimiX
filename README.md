@@ -4,121 +4,13 @@
 the AnymeX desktop runtime and Aniyomi extensions. It is independent and not
 affiliated with or endorsed by the AnymeX project.
 
-## 🧰 Requirements
-
-You'll need these installed before your first run:
-
-- [Java 21](https://adoptium.net/) or a compatible runtime
-- [`mpv`](https://mpv.io/installation/) for video playback
-- AnymeX-compatible extension JARs — install them from inside AnimiX, or point
-  it at an existing Aniyomi extension folder
-
-[Go 1.24+](https://go.dev/dl/) is only needed when running or building from
-source; the install script below fetches a prebuilt binary.
-
-AnimiX drives the [AnymeX](https://github.com/RyanYuuki/AnymeX) desktop runtime,
-so the same extension ecosystem applies.
-
-> **Cloudflare-protected sources:** stock upstream runtime releases do not emit
-> Cloudflare challenge events yet. Use **our fork** —
-> [itsmenewbie03/AnymeXExtensionRuntimeBridge](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge)
-> — with `--install-runtime fork@latest` when you need recovery.
-> See **Cloudflare Recovery** below.
-
 ## 📦 Install
 
-Prebuilt binaries are published to GitHub Releases. The installer needs `curl`
-and either `sha256sum` or `shasum`; no Go toolchain is required:
+See **[INSTALL.md](INSTALL.md)** for requirements, current installation steps,
+the recommended `animix --setup` fast path, and advanced setup for existing
+AnymeX, Aniyomi, Anikku, or other Tachiyomi-derived ecosystem users.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/itsmenewbie03/AnimiX/main/install.sh | bash
-```
-
-It installs `animix` to `~/.local/bin`. Pin a release or choose another
-destination:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/itsmenewbie03/AnimiX/main/install.sh | bash -s -- --version v0.1.0
-curl -fsSL https://raw.githubusercontent.com/itsmenewbie03/AnimiX/main/install.sh | bash -s -- --dir ~/bin
-```
-
-The same settings are available as `ANIMIX_VERSION`, `ANIMIX_INSTALL_DIR`, and
-`ANIMIX_REPO` environment variables.
-
-The binary still needs a runtime JAR. Install one after the script finishes:
-
-```sh
-animix --install-runtime            # latest upstream
-animix --install-runtime fork@latest # our Cloudflare-aware fork
-```
-
-## 🛠️ Setup
-
-From a source checkout, install a runtime with Go (a prebuilt binary uses the
-same flags without `go run`):
-
-```sh
-go run . --install-runtime
-```
-
-A bare install resolves the **latest upstream release**. That is the stock
-runtime, so it does **not** include Cloudflare events. Choose a source and
-version explicitly:
-
-```sh
-# Latest release from OUR fork (Cloudflare-aware)
-go run . --install-runtime fork@latest
-
-# A specific release from our fork
-go run . --install-runtime fork@v2.7.3-animix.1
-
-# Latest upstream release
-go run . --install-runtime upstream@latest
-
-# A specific upstream release
-go run . --install-runtime upstream@v2.7.3
-```
-
-Here **fork** means our fork at
-[itsmenewbie03/AnymeXExtensionRuntimeBridge](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge).
-`--install-runtime=fork@latest` works too; a source without `@version` means
-`@latest`. Every download is SHA-256 verified against the GitHub release digest.
-
-Installs are isolated by source and version:
-
-```text
-~/.config/animix/runtime/<source>/<version>/anymex_desktop_runtime.jar
-```
-
-The most recent install becomes the default for plain `go run .`; pass
-`--runtime` to override it. The selection is recorded in
-`~/.config/animix/runtime/current`.
-
-After installing, launch AnimiX with:
-
-```sh
-go run .
-```
-
-If your extensions live somewhere else:
-
-```sh
-go run . --extensions /path/to/AnimiX/Extensions/Aniyomi
-```
-
-Testing unreleased runtime bridge changes? Pass your rebuilt JAR explicitly —
-`--install-runtime` installs a published release and won't test your local build:
-
-```sh
-go run . --runtime ../AnymeXExtensionRuntimeBridge/RuntimeBridges/Desktop/build/libs/desktop_bridge.jar
-```
-
-Need to check Java, the bridge process, and the extension directory without
-opening the TUI?
-
-```sh
-go run . --diagnose
-```
+## ⚙️ Configuration
 
 AnimiX stores user-editable settings in `~/.config/animix/config.toml` and
 keeps app-managed history, credentials, mappings, and source choices in
@@ -289,6 +181,19 @@ subtitles, then returns you to the episode selector when playback ends.
   flooded by hundreds of segment requests at startup.
 - To capture an mpv log for a stream that still ends early, set
   `ANIMIX_MPV_LOG=/tmp/animix-mpv.log` before launching AnimiX.
+
+For timestamp and pause/reconnect diagnosis, build the opt-in playback probe:
+
+```sh
+go build -tags probe -o animix-probe .
+./animix-probe
+```
+
+Each mpv session writes a private JSONL trace under
+`$XDG_STATE_HOME/animix/probes` (or `~/.local/state/animix/probes`). Set
+`ANIMIX_PROBE_DIR` to choose another directory. Probe traces contain sampled
+mpv IPC state and redacted stderr; command arguments, stream URLs, cookies, and
+request headers are not recorded. Review traces before sharing them.
 
 ## 🛡️ Cloudflare Recovery
 

@@ -100,6 +100,7 @@ const (
 type Model struct {
 	appContext            context.Context
 	discord               DiscordPresence
+	discordAutoDisabled   bool
 	discordInput          textinput.Model
 	mangaPresence         map[string]discord.SessionID
 	service               *catalog.Service
@@ -634,6 +635,12 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 
 func (m Model) Init() tea.Cmd {
 	commands := []tea.Cmd{m.spinner.Tick, m.loadRepositories()}
+	if m.discord != nil {
+		commands = append(commands, discordTick())
+		if m.discordAutoDisabled {
+			commands = append(commands, func() tea.Msg { return discordStartupWarningMsg{} })
+		}
+	}
 	if m.updateService != nil {
 		commands = append(commands, m.checkForUpdates())
 	}
@@ -672,10 +679,38 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeEpisodeList()
 		return m, nil
 	case discordTickMsg:
-		if m.stage == stageDiscord {
-			return m, discordTick()
+		if m.discord != nil && m.discord.Status().AutoDisabled && !m.discordAutoDisabled {
+			m.discordAutoDisabled = true
+			m.err = m.saveDiscord(func(config *appconfig.Config) {
+				config.Discord.Enabled = false
+				config.Discord.AutoDisabled = true
+			}, false)
+			return m, tea.Batch(discordTick(), m.notifier.Notify(notification.Notice{
+				ID: "discord-auto-disabled", Title: "Discord Rich Presence disabled",
+				Message: "Disabled after too many failed attempts to connect to the Discord desktop client.",
+				Level:   notification.Warning, Timeout: 15 * time.Second,
+			}))
 		}
-		return m, nil
+		return m, discordTick()
+	case discordStartupWarningMsg:
+		if m.configStore != nil {
+			config, err := m.configStore.Load()
+			if err == nil {
+				preferences := config.DiscordPreferences()
+				preferences.AutoDisabled = false
+				config.Discord = &preferences
+				err = m.configStore.Save(config)
+			}
+			if err != nil {
+				m.err = fmt.Errorf("clear Discord startup reminder: %w", err)
+			}
+		}
+		m.discordAutoDisabled = false
+		return m, m.notifier.Notify(notification.Notice{
+			ID: "discord-auto-disabled", Title: "Discord Rich Presence disabled",
+			Message: "Rich Presence was disabled after repeated failures to connect to the Discord desktop client. This reminder is shown once; re-enable it from Discord settings.",
+			Level:   notification.Warning, Timeout: 15 * time.Second,
+		})
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)

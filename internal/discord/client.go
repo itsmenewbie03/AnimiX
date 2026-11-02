@@ -11,11 +11,19 @@ import (
 type Settings struct {
 	Enabled, ShowBrowsing bool
 	Token                 string
+	Transport             Transport
 	// ApplicationID optionally overrides AnimiX's public Discord application ID.
 	ApplicationID string
 	LargeImage    string
 	ShowArtwork   bool
 }
+
+type Transport string
+
+const (
+	TransportIPC     Transport = "ipc"
+	TransportGateway Transport = "gateway"
+)
 
 const DefaultApplicationID = "1565699349026054264"
 
@@ -24,6 +32,13 @@ func (settings Settings) withDefaults() Settings {
 	settings.ApplicationID = strings.TrimSpace(settings.ApplicationID)
 	if settings.ApplicationID == "" {
 		settings.ApplicationID = DefaultApplicationID
+	}
+	if settings.Transport == "" {
+		if settings.Token != "" {
+			settings.Transport = TransportGateway
+		} else {
+			settings.Transport = TransportIPC
+		}
 	}
 	return settings
 }
@@ -64,6 +79,8 @@ type Status struct {
 	CloseCode                           int
 	ArtworkState                        ArtworkState
 	ArtworkHTTPStatus                   int
+	Transport                           Transport
+	AutoDisabled                        bool
 }
 
 type SessionID uint64
@@ -85,8 +102,6 @@ type Client struct {
 	deps      dependencies
 }
 
-func New(ctx context.Context) *Client { return newClient(ctx, defaultDependencies()) }
-
 func newClient(ctx context.Context, deps dependencies) *Client {
 	c := &Client{wake: make(chan struct{}, 1), done: make(chan struct{}), deps: deps, status: Status{State: Disabled}}
 	go c.run(ctx)
@@ -102,6 +117,8 @@ func (c *Client) Configure(settings Settings) {
 		c.settings = settings
 		c.configRev++
 		c.status.Enabled, c.status.HasToken = settings.Enabled, settings.Token != ""
+		c.status.Transport = TransportGateway
+		c.status.AutoDisabled = false
 		c.status.HasApplicationID = settings.ApplicationID != ""
 		c.status.ShowBrowsing, c.status.ShowArtwork = settings.ShowBrowsing, settings.ShowArtwork
 		c.status.ArtworkHTTPStatus = 0

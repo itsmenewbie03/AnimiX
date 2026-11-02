@@ -1,5 +1,6 @@
-// Package discord publishes the current AnimiX activity through a direct Discord
-// Gateway connection. Connection recovery never changes the desired activity.
+// Package discord publishes the current AnimiX activity through official local
+// IPC or an explicitly selected direct Gateway connection. Connection recovery
+// never changes the desired activity.
 package discord
 
 import (

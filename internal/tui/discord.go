@@ -146,6 +146,18 @@ func (m Model) handleDiscordKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			config.Discord.AutoDisabled = false
 		}, true)
 		m.discordAutoDisabled = false
+	case "g":
+		if !status.HasToken {
+			m.stage = stageDiscordToken
+			m.discordInput.SetValue("")
+			m.discordInput.Focus()
+			return m, textinput.Blink
+		}
+		m.err = m.saveDiscord(func(config *appconfig.Config) {
+			config.Discord.Transport = string(discord.TransportGateway)
+			config.Discord.AutoDisabled = false
+		}, true)
+		m.discordAutoDisabled = false
 	case "b":
 		m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.ShowBrowsing = !status.ShowBrowsing }, false)
 	case "a":
@@ -242,6 +254,6 @@ func (m Model) discordView() string {
 	} else {
 		output.WriteString("\nGateway mode is unofficial and allows sharing without the Discord desktop client.\n\n")
 	}
-	output.WriteString(helpStyle.Render("e sharing on/off • i use desktop IPC • t set Gateway token\nb browsing on/off • a poster artwork on/off • r retry • x forget token • esc home • q quit"))
+	output.WriteString(helpStyle.Render("e sharing on/off • i use desktop IPC • g use Gateway • t replace token\nb browsing on/off • a poster artwork on/off • r retry • x forget token • esc home • q quit"))
 	return output.String()
 }

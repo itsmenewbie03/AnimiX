@@ -323,7 +323,8 @@ on Linux, macOS, and Windows, so the desktop app can be closed. It is an
 unofficial user-session integration: ordinary OAuth access tokens and bot tokens
 cannot publish your personal activity through this connection. IPC mode uses
 Discord's official local connection and requires the desktop client to be
-running. Press `i` to switch to IPC.
+running. Press `i` to use IPC or `g` to switch back to Gateway. Switching keeps
+the saved token, so Gateway only prompts when no token exists.
 
 On the Discord screen:
 
@@ -331,6 +332,7 @@ On the Discord screen:
 | --- | --- |
 | `e` | Enable or disable sharing |
 | `i` | Use the running Discord desktop client over local IPC |
+| `g` | Switch to Gateway using the saved token |
 | `t` | Set or replace the Gateway token |
 | `b` | Toggle optional “Browsing AnimiX” activity |
 | `a` | Toggle anime/manga poster artwork |

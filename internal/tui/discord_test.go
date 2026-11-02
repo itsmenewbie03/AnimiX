@@ -99,6 +99,82 @@ func TestDiscordTokenIsMaskedAndSavingDoesNotEnableSharing(t *testing.T) {
 	}
 }
 
+func TestDiscordTransportSwitchesKeepSavedToken(t *testing.T) {
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	config := appconfig.Config{
+		DiscordToken: "fixture",
+		Discord: &appconfig.DiscordSettings{
+			Enabled: true, Transport: string(discord.TransportGateway),
+		},
+	}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	presence := &fakeDiscord{}
+	presence.Configure(discordSettings(config))
+	model := New(nil, store, "", "mpv", WithDiscordPresence(presence))
+	model.loading, model.stage = false, stageDiscord
+
+	model = discordKey(model, "i")
+	if model.err != nil || model.stage != stageDiscord {
+		t.Fatalf("switching to IPC prompted for a token: %v", model.err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DiscordPreferences().Transport != string(discord.TransportIPC) {
+		t.Fatalf("transport = %q, want IPC", loaded.DiscordPreferences().Transport)
+	}
+	if loaded.DiscordToken != "fixture" || presence.settings.Token != "fixture" {
+		t.Fatal("switching to IPC lost the saved token")
+	}
+	if !presence.settings.Enabled {
+		t.Fatal("switching transport while sharing was enabled stopped sharing")
+	}
+
+	model = discordKey(model, "g")
+	if model.err != nil || model.stage != stageDiscord {
+		t.Fatalf("switching to Gateway with a saved token prompted for a new token: %v", model.err)
+	}
+	loaded, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DiscordPreferences().Transport != string(discord.TransportGateway) {
+		t.Fatalf("transport = %q, want Gateway", loaded.DiscordPreferences().Transport)
+	}
+	if loaded.DiscordToken != "fixture" || presence.settings.Token != "fixture" {
+		t.Fatal("switching to Gateway lost the saved token")
+	}
+}
+
+func TestDiscordGatewaySwitchPromptsOnlyWithoutToken(t *testing.T) {
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	if err := store.Save(appconfig.Config{
+		Discord: &appconfig.DiscordSettings{Transport: string(discord.TransportIPC)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	presence := &fakeDiscord{}
+	model := New(nil, store, "", "mpv", WithDiscordPresence(presence))
+	model.loading, model.stage = false, stageDiscord
+
+	model = discordKey(model, "g")
+	if model.stage != stageDiscordToken {
+		t.Fatal("switching to Gateway without a token did not prompt for one")
+	}
+	model.discordInput.SetValue("fixture")
+	model = discordKey(model, "enter")
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DiscordToken != "fixture" || config.DiscordPreferences().Transport != string(discord.TransportGateway) {
+		t.Fatalf("token prompt did not select Gateway: %#v", config.Discord)
+	}
+}
+
 func TestDiscordIPCFailurePersistsDisableAndNotifies(t *testing.T) {
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
 	config := appconfig.Config{Discord: &appconfig.DiscordSettings{Enabled: true, Transport: string(discord.TransportIPC)}}

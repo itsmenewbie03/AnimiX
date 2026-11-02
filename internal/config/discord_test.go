@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -16,8 +17,11 @@ func TestDiscordSettingsAndCredentialStaySeparateAcrossHistorySaves(t *testing.T
 	if config.DiscordPreferences().Enabled || config.DiscordPreferences().ShowBrowsing {
 		t.Fatal("Discord sharing must default off")
 	}
+	if !config.DiscordPreferences().ArtworkEnabled() {
+		t.Fatal("Discord poster artwork must default on")
+	}
 	config.DiscordToken = "discord-fixture-token"
-	config.Discord = &DiscordSettings{ApplicationID: "123", ShowArtwork: true}
+	config.Discord = &DiscordSettings{ApplicationID: "123", ShowArtwork: artworkPointer(true)}
 	if err := store.Save(config); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +35,7 @@ func TestDiscordSettingsAndCredentialStaySeparateAcrossHistorySaves(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.DiscordToken != config.DiscordToken || loaded.DiscordPreferences() != *config.Discord || loaded.DiscordPreferences().Enabled {
+	if loaded.DiscordToken != config.DiscordToken || !reflect.DeepEqual(loaded.DiscordPreferences(), *config.Discord) || loaded.DiscordPreferences().Enabled {
 		t.Fatalf("Discord settings changed while saving history: %#v", loaded.Discord)
 	}
 	settings, err := os.ReadFile(store.path)
@@ -59,6 +63,37 @@ func TestDiscordSettingsAndCredentialStaySeparateAcrossHistorySaves(t *testing.T
 	}
 }
 
+func TestDiscordArtworkDefaultsOnAndExplicitOptOutPersists(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	config, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.DiscordPreferences().ArtworkEnabled() {
+		t.Fatal("missing show_artwork did not default on")
+	}
+	config.Discord = &DiscordSettings{ShowArtwork: artworkPointer(false)}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DiscordPreferences().ArtworkEnabled() {
+		t.Fatal("explicit show_artwork = false was not preserved")
+	}
+	settings, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(settings), "show_artwork = false") {
+		t.Fatalf("settings did not persist artwork opt-out: %s", settings)
+	}
+}
+
+func artworkPointer(value bool) *bool { return &value }
+
 func TestDiscordCombinedTOMLMigrationPreservesExplicitOptOut(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	data := "discord_token = \"fixture\"\n[discord]\nenabled = false\nshow_browsing = false\napplication_id = \"123\"\n"
@@ -72,6 +107,9 @@ func TestDiscordCombinedTOMLMigrationPreservesExplicitOptOut(t *testing.T) {
 	}
 	if loaded.DiscordToken != "fixture" || loaded.DiscordPreferences().Enabled || loaded.DiscordPreferences().ApplicationID != "123" {
 		t.Fatalf("migrated preferences = %#v", loaded.Discord)
+	}
+	if !loaded.DiscordPreferences().ArtworkEnabled() {
+		t.Fatal("migration changed the artwork default")
 	}
 	settings, _ := os.ReadFile(path)
 	if strings.Contains(string(settings), "discord_token") {

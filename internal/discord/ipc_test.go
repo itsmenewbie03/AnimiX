@@ -51,8 +51,10 @@ func TestIPCHandshakePublishesAndClearsActivity(t *testing.T) {
 	}
 	deps.retry = func(int) time.Duration { return time.Hour }
 	client := newIPCClient(context.Background(), deps)
-	client.Begin(watching("IPC fixture"))
-	client.Configure(Settings{Enabled: true, Transport: TransportIPC})
+	snapshot := watching("IPC fixture")
+	snapshot.CoverURL = "https://images.example/cover.jpg"
+	client.Begin(snapshot)
+	client.Configure(Settings{Enabled: true, Transport: TransportIPC, ShowArtwork: true, LargeImage: "fallback-asset"})
 	awaitIPCStatus(t, clientStatus{client}, func(status Status) bool { return status.State == Ready && !status.LastSent.IsZero() })
 
 	hello := <-requests
@@ -65,6 +67,10 @@ func TestIPCHandshakePublishesAndClearsActivity(t *testing.T) {
 	if published["cmd"] != "SET_ACTIVITY" || activity["details"] != "IPC fixture" {
 		t.Fatalf("activity request = %#v", published)
 	}
+	assets, ok := activity["assets"].(map[string]any)
+	if !ok || assets["large_image"] != snapshot.CoverURL {
+		t.Fatalf("IPC artwork = %#v", activity["assets"])
+	}
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -76,6 +82,31 @@ func TestIPCHandshakePublishesAndClearsActivity(t *testing.T) {
 		t.Fatalf("close did not clear activity: %#v", cleared)
 	}
 	<-serverDone
+}
+
+func TestIPCImagePrefersPublicSourceCover(t *testing.T) {
+	t.Parallel()
+	cover := "https://images.example/cover.jpg"
+	tests := []struct {
+		name     string
+		settings Settings
+		cover    string
+		want     string
+	}{
+		{name: "enabled uses source cover", settings: Settings{ShowArtwork: true, LargeImage: "asset"}, cover: cover, want: cover},
+		{name: "disabled keeps large image", settings: Settings{LargeImage: "asset"}, cover: cover, want: "asset"},
+		{name: "invalid cover keeps large image", settings: Settings{ShowArtwork: true, LargeImage: "asset"}, cover: "http://images.example/cover.jpg", want: "asset"},
+		{name: "local cover is rejected", settings: Settings{ShowArtwork: true, LargeImage: "asset"}, cover: "https://localhost/cover.jpg", want: "asset"},
+		{name: "no images", settings: Settings{ShowArtwork: true}, cover: "", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := Snapshot{CoverURL: test.cover}
+			if got := ipcImage(test.settings, snapshot); got != test.want {
+				t.Fatalf("image = %q, want %q", got, test.want)
+			}
+		})
+	}
 }
 
 type clientStatus struct{ client *ipcClient }

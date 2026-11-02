@@ -48,7 +48,7 @@ func discordSettings(config appconfig.Config) discord.Settings {
 	}
 	return discord.Settings{
 		Enabled: prefs.Enabled, Transport: transport, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
-		ApplicationID: applicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork && transport != discord.TransportIPC,
+		ApplicationID: applicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ArtworkEnabled(),
 	}
 }
 
@@ -146,14 +146,25 @@ func (m Model) handleDiscordKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			config.Discord.AutoDisabled = false
 		}, true)
 		m.discordAutoDisabled = false
+	case "g":
+		if !status.HasToken {
+			m.stage = stageDiscordToken
+			m.discordInput.SetValue("")
+			m.discordInput.Focus()
+			return m, textinput.Blink
+		}
+		m.err = m.saveDiscord(func(config *appconfig.Config) {
+			config.Discord.Transport = string(discord.TransportGateway)
+			config.Discord.AutoDisabled = false
+		}, true)
+		m.discordAutoDisabled = false
 	case "b":
 		m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.ShowBrowsing = !status.ShowBrowsing }, false)
 	case "a":
-		if status.Transport == discord.TransportIPC {
-			m.err = fmt.Errorf("poster artwork is only available in Gateway mode")
-		} else {
-			m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.ShowArtwork = !status.ShowArtwork }, false)
-		}
+		m.err = m.saveDiscord(func(config *appconfig.Config) {
+			artwork := !status.ShowArtwork
+			config.Discord.ShowArtwork = &artwork
+		}, false)
 	case "x":
 		m.err = m.saveDiscord(func(config *appconfig.Config) {
 			config.DiscordToken = ""
@@ -204,14 +215,21 @@ func (m Model) discordView() string {
 	output.WriteString(titleStyle.Render("Discord presence") + "\n\n")
 	fmt.Fprintf(&output, "Sharing: %s\nTransport: %s\nBrowsing: %s\nPoster artwork: %s\nGateway token: %s\nConnection: %s\n",
 		flag(status.Enabled), status.Transport, flag(status.ShowBrowsing), flag(status.ShowArtwork), credential, status.State)
-	if status.ShowArtwork && !status.HasApplicationID {
-		output.WriteString("Poster artwork needs application_id in config.toml.\n")
-	} else if status.ShowArtwork {
-		fmt.Fprintf(&output, "Poster status: %s", status.ArtworkState)
-		if status.ArtworkHTTPStatus > 0 {
-			fmt.Fprintf(&output, " (Discord HTTP %d)", status.ArtworkHTTPStatus)
+	if status.ShowArtwork {
+		switch {
+		case !status.Enabled:
+			output.WriteString("Poster artwork applies when sharing is enabled.\n")
+		case status.Transport == discord.TransportIPC:
+			output.WriteString("Poster artwork uses the source cover through local IPC.\n")
+		case !status.HasApplicationID:
+			output.WriteString("Poster artwork needs application_id in config.toml.\n")
+		default:
+			fmt.Fprintf(&output, "Poster status: %s", status.ArtworkState)
+			if status.ArtworkHTTPStatus > 0 {
+				fmt.Fprintf(&output, " (Discord HTTP %d)", status.ArtworkHTTPStatus)
+			}
+			output.WriteString("\n")
 		}
-		output.WriteString("\n")
 	}
 	if status.Username != "" {
 		fmt.Fprintf(&output, "Account: %s\n", status.Username)
@@ -236,6 +254,6 @@ func (m Model) discordView() string {
 	} else {
 		output.WriteString("\nGateway mode is unofficial and allows sharing without the Discord desktop client.\n\n")
 	}
-	output.WriteString(helpStyle.Render("e sharing on/off • i use desktop IPC • t set Gateway token\nb browsing on/off • a poster artwork on/off • r retry • x forget token • esc home • q quit"))
+	output.WriteString(helpStyle.Render("e sharing on/off • i use desktop IPC • g use Gateway • t replace token\nb browsing on/off • a poster artwork on/off • r retry • x forget token • esc home • q quit"))
 	return output.String()
 }

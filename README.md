@@ -312,21 +312,28 @@ from the library to sign out.
 
 ## 💬 Discord Presence
 
-Discord sharing is **off by default**. From Home, press `p`, then `t` to paste a
-Discord **user-session token** into the masked input. Press `Enter` to save it,
-then `e` to enable sharing. Saving a token preserves the sharing preference.
+Discord sharing is **off by default**. From Home, press `p`, then `e` to enable
+sharing over the running Discord desktop client. IPC needs no token. To share
+without the desktop client, press `t` and paste a Discord **user-session token**
+into the masked input; press `Enter` to save it, then `e` to enable Gateway
+sharing. Saving a token preserves the sharing preference.
 
-AnimiX connects directly to the Discord Gateway in Go on Linux, macOS, and
-Windows; the Discord desktop app can be closed. This is an unofficial
-user-session integration: ordinary OAuth access tokens and bot tokens cannot
-publish your personal activity through this connection.
+AnimiX supports two Discord transports. Gateway mode connects directly from Go
+on Linux, macOS, and Windows, so the desktop app can be closed. It is an
+unofficial user-session integration: ordinary OAuth access tokens and bot tokens
+cannot publish your personal activity through this connection. IPC mode uses
+Discord's official local connection and requires the desktop client to be
+running. Press `i` to use IPC or `g` to switch back to Gateway. Switching keeps
+the saved token, so Gateway only prompts when no token exists.
 
 On the Discord screen:
 
 | Key | Action |
 | --- | --- |
 | `e` | Enable or disable sharing |
-| `t` | Set or replace the token |
+| `i` | Use the running Discord desktop client over local IPC |
+| `g` | Switch to Gateway using the saved token |
+| `t` | Set or replace the Gateway token |
 | `b` | Toggle optional “Browsing AnimiX” activity |
 | `a` | Toggle anime/manga poster artwork |
 | `r` | Retry the connection and reload Discord settings |
@@ -339,27 +346,30 @@ within a minute. Network interruptions reconnect automatically and replay the
 latest activity. Updates are coalesced to respect Discord's send limits.
 
 When poster artwork is enabled, watching uses the anime cover and reading uses
-the manga cover as the activity's large image. Artwork loads independently, so
-an unavailable cover never delays the title and episode/chapter text. Linked
-titles prefer AniList's CDN cover because some extension image hosts reject
-Discord's image proxy; unlinked titles fall back to the extension poster.
+the manga cover as the activity's large image. Artwork is on by default, can be
+disabled independently, and only applies while sharing is enabled. Linked
+titles prefer AniList's CDN cover; unlinked titles use the extension poster.
+Gateway mode converts public HTTPS covers through Discord's external-assets
+endpoint. IPC mode passes the same public cover URL directly to the desktop
+client. Missing or failed artwork falls back to `large_image`, then text.
 
-Preferences live in `config.toml`. AnimiX ships its public Discord application
-ID, so users do not need to register an application:
+Preferences live in `config.toml`. Sharing remains opt-in, while poster artwork
+defaults on. AnimiX ships its public Discord application ID, so users do not
+need to register an application:
 
 ```toml
 [discord]
 enabled = false
 show_browsing = false
-show_artwork = false
+show_artwork = true
 ```
 
 Linked titles include an AniList button, and clicking their poster opens the
 same AniList page. Developers may override `application_id` and `large_image`
-to test another Discord application and uploaded fallback asset.
-`show_artwork = true` enables conversion of public HTTPS cover URLs through
-Discord's external-assets endpoint; missing or failed artwork falls back to
-`large_image`, then text. After editing settings, press `r` or restart AnimiX.
+to test another Discord application and uploaded fallback asset. Poster artwork
+defaults to on; set `show_artwork = false` to opt out. Missing or failed artwork
+falls back to `large_image`, then text. After editing settings, press `r` or
+restart AnimiX.
 
 The token is stored unencrypted in managed `state.json`, alongside other account
 credentials, with owner-only (`0600`) permissions on Unix. It is excluded from

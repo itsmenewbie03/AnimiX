@@ -290,6 +290,19 @@ subtitles, then returns you to the episode selector when playback ends.
 - To capture an mpv log for a stream that still ends early, set
   `ANIMIX_MPV_LOG=/tmp/animix-mpv.log` before launching AnimiX.
 
+For timestamp and pause/reconnect diagnosis, build the opt-in playback probe:
+
+```sh
+go build -tags probe -o animix-probe .
+./animix-probe
+```
+
+Each mpv session writes a private JSONL trace under
+`$XDG_STATE_HOME/animix/probes` (or `~/.local/state/animix/probes`). Set
+`ANIMIX_PROBE_DIR` to choose another directory. Probe traces contain sampled
+mpv IPC state and redacted stderr; command arguments, stream URLs, cookies, and
+request headers are not recorded. Review traces before sharing them.
+
 ## 🛡️ Cloudflare Recovery
 
 When the runtime reports a Cloudflare 403/429/503 challenge, AnimiX cancels the

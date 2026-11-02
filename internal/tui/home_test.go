@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2213,13 +2214,83 @@ func TestResumeWatchingFiltersCompletedPlayback(t *testing.T) {
 
 func TestCloudflareErrorDetection(t *testing.T) {
 	t.Parallel()
-	for _, message := range []string{"HTTP 403 Forbidden", "status 429", "too many requests", "status 503", "Cloudflare challenge", "missing cf_clearance", "captcha required"} {
+	for _, message := range []string{"Cloudflare challenge", "missing cf_clearance", "captcha required"} {
 		if !isCloudflareError(fmt.Errorf("%s", message)) {
 			t.Errorf("did not detect %q", message)
 		}
 	}
-	if isCloudflareError(fmt.Errorf("connection refused")) {
-		t.Fatal("ordinary network error detected as Cloudflare")
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		fmt.Errorf("HTTP 403 Forbidden"),
+		fmt.Errorf("status 429"),
+		fmt.Errorf("too many requests"),
+		fmt.Errorf("status 503"),
+		fmt.Errorf("connection refused"),
+	} {
+		if isCloudflareError(err) {
+			t.Errorf("ordinary failure detected as Cloudflare: %v", err)
+		}
+	}
+}
+
+func TestSourceTimeoutDoesNotOpenCloudflareRecovery(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading = stageEpisodes, false
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.details = catalog.Media{Title: "Cyberpunk: Edgerunners"}
+
+	updated, _ := model.update(videosMsg{err: context.DeadlineExceeded})
+	model = updated.(Model)
+	if model.stage != stageEpisodes {
+		t.Fatalf("timeout opened stage %d, want episodes", model.stage)
+	}
+	if model.err == nil || !strings.Contains(model.err.Error(), "did not respond in time") {
+		t.Fatalf("timeout error = %v", model.err)
+	}
+}
+
+func TestCloudflareRecoveryCanSwitchExtension(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading, model.cloudflareReturn = stageCloudflareCookie, false, stageEpisodes
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.details = catalog.Media{Title: "Cyberpunk: Edgerunners", Episodes: []catalog.Episode{{Name: "1"}}}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	if model.stage != stageCloudflareSource {
+		t.Fatalf("ctrl+e stage = %d, want source picker", model.stage)
+	}
+	model.cursor = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if command == nil || model.selectedSource.ID != "animepahe" {
+		t.Fatalf("source switch = %q, command=%v", model.selectedSource.ID, command)
+	}
+	if model.stage != stageSearch || model.search.Value() != "Cyberpunk: Edgerunners" {
+		t.Fatalf("switch did not restart search: stage=%d query=%q", model.stage, model.search.Value())
+	}
+	if model.cloudflareOperation != cloudflareNone {
+		t.Fatal("source switch kept the stale Cloudflare operation")
+	}
+}
+
+func TestCloudflareSourcePickerUsesCurrentMediaType(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.selectedSource = catalog.Source{ID: "manga", Name: "MangaFire", Type: "manga"}
+	model.sources = []catalog.Source{
+		{ID: "anime", Name: "Anikoto", Type: "anime"},
+		{ID: "manga", Name: "MangaFire", Type: "manga"},
+	}
+	sources := model.resolutionSources()
+	if len(sources) != 1 || sources[0].ID != "manga" {
+		t.Fatalf("source picker = %#v", sources)
 	}
 }
 
@@ -2417,10 +2488,73 @@ func TestCloudflareRecoveryBreadcrumbUsesReturnStage(t *testing.T) {
 	}
 }
 
-func TestExtensionRequestsDoNotAppearStuck(t *testing.T) {
+func TestRetryOnTimeoutRetriesOnceThenSucceeds(t *testing.T) {
 	t.Parallel()
-	if extensionRequestTimeout > 10*time.Second {
-		t.Fatalf("extension request timeout = %s, want at most 10s", extensionRequestTimeout)
+	calls := 0
+	err := retryOnTimeout(2, time.Second, func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return context.DeadlineExceeded
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("err=%v calls=%d, want nil after 2 attempts", err, calls)
+	}
+}
+
+func TestRetryOnTimeoutDoesNotRetryOtherErrors(t *testing.T) {
+	t.Parallel()
+	want := errors.New("boom")
+	calls := 0
+	err := retryOnTimeout(2, time.Second, func(context.Context) error {
+		calls++
+		return want
+	})
+	if !errors.Is(err, want) || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want %v after 1 attempt", err, calls, want)
+	}
+}
+
+func TestRetryOnTimeoutStopsAfterAttempts(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	err := retryOnTimeout(2, time.Second, func(context.Context) error {
+		calls++
+		return context.DeadlineExceeded
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 2 {
+		t.Fatalf("err=%v calls=%d, want deadline exceeded after 2 attempts", err, calls)
+	}
+}
+
+func TestExtensionRequestsUseConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	if got := model.requestTimeout(); got != appconfig.DefaultExtensionTimeout {
+		t.Fatalf("default request timeout = %s, want %s", got, appconfig.DefaultExtensionTimeout)
+	}
+	model.extensionTimeout = 45 * time.Second
+	if got := model.requestTimeout(); got != 45*time.Second {
+		t.Fatalf("configured request timeout = %s, want 45s", got)
+	}
+}
+
+func TestRepositoriesMessageAppliesExtensionTimeout(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.extensionTimeout = 3 * time.Second
+
+	updated, _ := model.update(repositoriesMsg{extensionTimeout: 25 * time.Second})
+	model = updated.(Model)
+	if got := model.requestTimeout(); got != 25*time.Second {
+		t.Fatalf("request timeout after load = %s, want 25s", got)
+	}
+
+	updated, _ = model.update(repositoriesMsg{})
+	model = updated.(Model)
+	if got := model.requestTimeout(); got != 25*time.Second {
+		t.Fatalf("empty config reset timeout to %s", got)
 	}
 }
 

@@ -53,6 +53,19 @@ remotely-watched marker in local history, keeping matched episodes out of Resume
 across relaunches and AniList progress rollbacks without deleting their saved
 playback position.
 
+Extension requests are bounded per call. The default is 10 seconds; raise it for
+slow sources such as Anikoto, which can take 5–7 seconds to return video links.
+Values are clamped to 5–120 seconds:
+
+```toml
+extension_timeout = 20
+```
+
+A request that reaches this limit is retried once automatically. If the retry
+also times out, the request is reported as a retryable failure. Timeouts are not
+treated as Cloudflare challenges, so increasing the timeout never opens the
+recovery prompt by itself.
+
 ## 🔨 Building
 
 The build produces a single `animix` binary:
@@ -88,6 +101,7 @@ a text field for the complete categorized shortcut reference.
 | `space`                                | Toggle **Remember server** on the stream screen      |
 | `a` / `s`                              | Search an alternative title / change source          |
 | `Ctrl+O`                               | Reopen reader / open source or AniList authorization |
+| `Ctrl+E`                               | Switch extension from Cloudflare recovery            |
 | `c`                                    | Start Cloudflare recovery manually                   |
 | `x`                                    | Sign out of AniList from the library screen          |
 
@@ -206,8 +220,13 @@ correlated request and opens a recovery prompt.
 
 Press `c` on a source-backed screen to start recovery manually when an
 extension hides the underlying HTTP error. Credentials are stored per source in
-a user-only (`0600`) configuration file. A 10-second request timeout remains as
-a fallback for old runtimes and unrecognized challenges.
+a user-only (`0600`) configuration file.
+
+Press `Ctrl+E` in the recovery prompt to switch to another installed extension
+and search again instead of obtaining new credentials. Slow sources are not
+assumed to be Cloudflare-protected: a request that reaches the configured
+timeout is retried once, then reported as a retryable failure and never opens
+recovery on its own.
 
 ### ⚠️ Use a runtime that emits Cloudflare events
 
@@ -224,8 +243,8 @@ go run . --install-runtime fork@latest
 Here **fork** means our fork at
 [itsmenewbie03/AnymeXExtensionRuntimeBridge](https://github.com/itsmenewbie03/AnymeXExtensionRuntimeBridge).
 Selecting `upstream@latest` or another stock upstream tag is still available,
-but those builds leave you on the 10-second timeout fallback because they do not
-emit `cloudflare` events. If you use `--runtime` directly, point it at a build or
+but those builds leave you on the timeout fallback (10 seconds by default)
+because they do not emit `cloudflare` events. If you use `--runtime` directly, point it at a build or
 release from our fork, not a stock upstream JAR.
 
 **Build the fork locally:**

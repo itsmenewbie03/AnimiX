@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/itsmenewbie03/animix/internal/anilist"
 	"github.com/itsmenewbie03/animix/internal/aniskip"
+	"github.com/itsmenewbie03/animix/internal/bridge"
 	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
@@ -30,10 +31,6 @@ import (
 	"github.com/itsmenewbie03/animix/internal/repository"
 	appupdate "github.com/itsmenewbie03/animix/internal/update"
 )
-
-// New runtimes report challenges immediately. Keep a bounded fallback for old
-// runtimes and extensions that hide or transform the underlying HTTP response.
-const extensionRequestTimeout = 10 * time.Second
 
 type stage uint8
 
@@ -62,6 +59,7 @@ const (
 	stageAutoPlayPrompt
 	stageDiscord
 	stageDiscordToken
+	stageCloudflareSource
 )
 
 type cloudflareOperation uint8
@@ -110,6 +108,7 @@ type Model struct {
 	anilistClient         *anilist.Client
 	aniskipClient         *aniskip.Client
 	extensionDirectory    string
+	extensionTimeout      time.Duration
 	player                string
 	mangaReader           MangaReader
 	stage                 stage
@@ -415,6 +414,7 @@ type repositoriesMsg struct {
 	mediaMappings     []appconfig.MediaMapping
 	sourceCredentials []appconfig.SourceCredential
 	streamPreferences []appconfig.StreamPreference
+	extensionTimeout  time.Duration
 	err               error
 }
 
@@ -601,6 +601,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		anilistClient:        anilist.NewClient(),
 		aniskipClient:        aniskip.NewClient(),
 		extensionDirectory:   extensionDirectory,
+		extensionTimeout:     appconfig.DefaultExtensionTimeout,
 		player:               playerExecutable,
 		stage:                stageSources,
 		homeType:             "anime",
@@ -733,7 +734,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.sources = msg.items
 		return m, nil
 	case searchMsg:
-		m.loading, m.err = false, msg.err
+		m.loading, m.err = false, sourceResponseError(msg.err)
 		if msg.err != nil {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflareSearch)
@@ -791,7 +792,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage, m.cursor = stageResults, 0
 		return m, nil
 	case detailsMsg:
-		m.loading, m.err = false, msg.err
+		m.loading, m.err = false, sourceResponseError(msg.err)
 		if msg.err != nil {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflareDetails)
@@ -836,7 +837,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage, m.cursor = stageDetails, 0
 		return m, nil
 	case videosMsg:
-		m.loading, m.err = false, msg.err
+		m.loading, m.err = false, sourceResponseError(msg.err)
 		if msg.episodeMetadata != nil {
 			m.selectedEpisode.Title = msg.episodeMetadata.Title
 			m.selectedEpisode.Description = msg.episodeMetadata.Description
@@ -891,7 +892,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case pagesMsg:
-		m.loading, m.err = false, msg.err
+		m.loading, m.err = false, sourceResponseError(msg.err)
 		if msg.err != nil {
 			if isCloudflareError(msg.err) {
 				return m.beginCloudflareRecovery(cloudflarePages)
@@ -1052,6 +1053,9 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.mediaMappings = msg.mediaMappings
 			m.sourceCredentials = msg.sourceCredentials
 			m.streamPreferences = msg.streamPreferences
+			if msg.extensionTimeout > 0 {
+				m.extensionTimeout = msg.extensionTimeout
+			}
 			commands := []tea.Cmd{m.loadSourceCredentials(msg.sourceCredentials)}
 			if msg.token != "" {
 				commands = append(commands, m.loadAniListLibrary(msg.token, false, true))
@@ -1379,6 +1383,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cookieInput.SetValue("")
 			m.err = nil
 			return m, nil
+		case "ctrl+e":
+			return m.beginCloudflareSourceSwitch()
 		case "esc":
 			m.cookieInput.Blur()
 			m.stage = m.cloudflareReturn
@@ -1406,6 +1412,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.userAgentInput.SetValue("")
 			m.err = nil
 			return m, nil
+		case "ctrl+e":
+			return m.beginCloudflareSourceSwitch()
 		case "esc":
 			m.userAgentInput.Blur()
 			m.stage = stageCloudflareCookie
@@ -1887,6 +1895,12 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		m.prepareResolutionSearches(*m.resolvingEpisode)
 		m.loading, m.err = true, nil
 		return m, tea.Batch(m.spinner.Tick, m.runSearch(m.resolutionQuery))
+	case stageCloudflareSource:
+		sources := m.resolutionSources()
+		if len(sources) == 0 || m.cursor < 0 || m.cursor >= len(sources) {
+			return m, nil
+		}
+		return m.switchCloudflareSource(sources[m.cursor])
 	case stageDetails:
 		if len(m.details.Episodes) > 0 {
 			m.stage, m.cursor = stageEpisodes, 0
@@ -2474,6 +2488,9 @@ func (m *Model) back() {
 			m.clearEpisodeResolution()
 			m.stage = stageSources
 		}
+	case stageCloudflareSource:
+		m.stage = stageCloudflareCookie
+		m.cookieInput.Focus()
 	}
 }
 
@@ -2537,7 +2554,7 @@ func (m Model) currentLength() int {
 		return len(m.filteredExtensions())
 	case stageAniListLibrary:
 		return len(m.trackingEntries)
-	case stageEpisodeSource:
+	case stageEpisodeSource, stageCloudflareSource:
 		return len(m.resolutionSources())
 	default:
 		return 0
@@ -2565,16 +2582,20 @@ func (m Model) animeSources() []catalog.Source {
 }
 
 func (m Model) resolutionSources() []catalog.Source {
-	if m.resolvingEpisode != nil && strings.EqualFold(m.resolvingEpisode.Type, "MANGA") {
-		result := make([]catalog.Source, 0, len(m.sources))
-		for _, source := range m.sources {
-			if strings.EqualFold(source.Type, "manga") {
-				result = append(result, source)
-			}
-		}
-		return result
+	mediaType := strings.ToLower(m.selectedSource.Type)
+	if m.resolvingEpisode != nil {
+		mediaType = strings.ToLower(m.resolvingEpisode.Type)
 	}
-	return m.animeSources()
+	if mediaType == "" {
+		mediaType = "anime"
+	}
+	result := make([]catalog.Source, 0, len(m.sources))
+	for _, source := range m.sources {
+		if strings.EqualFold(source.Type, mediaType) {
+			result = append(result, source)
+		}
+	}
+	return result
 }
 
 func (m Model) sourceForMedia(mediaID int, sources []catalog.Source) catalog.Source {
@@ -3412,9 +3433,35 @@ func (m *Model) cycleExtensionLanguage() {
 	m.extensionLanguage = languages[(index+1)%len(languages)]
 }
 
+// requestTimeout returns the configured extension request guard, falling back
+// to the default so a zero value from a partially initialized model is safe.
+func (m Model) requestTimeout() time.Duration {
+	if m.extensionTimeout > 0 {
+		return m.extensionTimeout
+	}
+	return appconfig.DefaultExtensionTimeout
+}
+
+// retryOnTimeout runs a request once per attempt, giving a slow source a single
+// automatic retry when an attempt hits the request guard. Every other error,
+// including Cloudflare challenges, is returned immediately so recovery is not
+// delayed or mistaken for a timeout.
+func retryOnTimeout(attempts int, timeout time.Duration, call func(context.Context) error) error {
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err = call(ctx)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+	}
+	return err
+}
+
 func (m Model) loadSources() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), m.requestTimeout())
 		defer cancel()
 		items, err := m.service.Sources(ctx, m.extensionDirectory)
 		return sourcesMsg{items: items, err: err}
@@ -3429,7 +3476,8 @@ func (m Model) loadRepositories() tea.Cmd {
 			continueWatching: config.ContinueWatching, mangaReading: config.MangaReading,
 			activeSources: config.ActiveSources,
 			mediaMappings: config.MediaMappings, sourceCredentials: config.SourceCredentials,
-			streamPreferences: config.StreamPreferences, err: err,
+			streamPreferences: config.StreamPreferences, extensionTimeout: config.ExtensionRequestTimeout(),
+			err: err,
 		}
 	}
 }
@@ -3488,7 +3536,7 @@ func (m Model) installExtension(extension repository.Extension) tea.Cmd {
 
 func (m Model) uninstallExtension(extension repository.Extension) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), m.requestTimeout())
 		defer cancel()
 		for _, source := range m.sources {
 			if source.Package != extension.Package && !containsString(extension.SourceIDs, source.ID) {
@@ -3628,9 +3676,12 @@ func nextAniListStatus(current string) string {
 
 func (m Model) runSearch(query string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
-		defer cancel()
-		pages, err := m.service.Search(ctx, m.selectedSource, query, 1)
+		var pages catalog.Pages
+		err := retryOnTimeout(2, m.requestTimeout(), func(ctx context.Context) error {
+			var callErr error
+			pages, callErr = m.service.Search(ctx, m.selectedSource, query, 1)
+			return callErr
+		})
 		return searchMsg{pages: pages, err: err}
 	}
 }
@@ -3639,11 +3690,15 @@ func isCloudflareError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	var challenge *bridge.CloudflareError
+	if errors.As(err, &challenge) {
 		return true
 	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
 	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"cloudflare", "cf_clearance", "challenge", "captcha", "http 403", "status 403", "http 429", "status 429", "too many requests", "http 503", "status 503"} {
+	for _, marker := range []string{"cloudflare", "cf_clearance", "captcha"} {
 		if strings.Contains(message, marker) {
 			return true
 		}
@@ -3651,10 +3706,17 @@ func isCloudflareError(err error) bool {
 	return false
 }
 
-func (m Model) beginCloudflareRecovery(operation cloudflareOperation) (tea.Model, tea.Cmd) {
-	if errors.Is(m.err, context.DeadlineExceeded) {
-		m.status = "Cloudflare bypass failed or the source did not respond in time."
+// sourceResponseError keeps slow sources distinct from Cloudflare challenges.
+// Commands retry a timeout once; if the retry also times out, this surfaces a
+// plain request failure instead of opening recovery.
+func sourceResponseError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("the source did not respond in time; try again")
 	}
+	return err
+}
+
+func (m Model) beginCloudflareRecovery(operation cloudflareOperation) (tea.Model, tea.Cmd) {
 	m.cloudflareOperation, m.cloudflareReturn = operation, m.stage
 	m.stage, m.loading, m.err = stageCloudflareCookie, false, nil
 	m.cookieInput.SetValue("")
@@ -3668,6 +3730,55 @@ func (m Model) beginCloudflareRecovery(operation cloudflareOperation) (tea.Model
 	}
 	m.cookieInput.Focus()
 	return m, textinput.Blink
+}
+
+func (m Model) beginCloudflareSourceSwitch() (tea.Model, tea.Cmd) {
+	sources := m.resolutionSources()
+	if len(sources) == 0 {
+		m.err = fmt.Errorf("no compatible extension is installed")
+		return m, nil
+	}
+	m.cookieInput.Blur()
+	m.userAgentInput.Blur()
+	m.stage, m.cursor = stageCloudflareSource, 0
+	for index, source := range sources {
+		if source.ID == m.selectedSource.ID {
+			m.cursor = index
+			break
+		}
+	}
+	return m, nil
+}
+
+func (m Model) switchCloudflareSource(source catalog.Source) (tea.Model, tea.Cmd) {
+	query := m.recoverySearchQuery()
+	m.selectedSource = source
+	m.cloudflareOperation = cloudflareNone
+	m.pendingPlayback = nil
+	m.autoPlay = autoPlayState{}
+	m.videos = nil
+	m.selectedEpisode = catalog.Episode{}
+	m.details = catalog.Media{}
+	m.selectedMedia = catalog.Media{}
+	m.loading, m.err, m.status = true, nil, ""
+	m.rememberActiveSource(source)
+	if m.resolvingEpisode != nil {
+		m.manualMapping = false
+		m.prepareResolutionSearches(*m.resolvingEpisode)
+		query = m.resolutionQuery
+	}
+	m.stage = stageSearch
+	m.search.SetValue(query)
+	m.search.Focus()
+	if query == "" {
+		m.loading = false
+		return m, textinput.Blink
+	}
+	return m, tea.Batch(m.spinner.Tick, m.runSearch(query))
+}
+
+func (m Model) recoverySearchQuery() string {
+	return firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle(), m.resolutionQuery, strings.TrimSpace(m.search.Value()))
 }
 
 func openURL(url string) tea.Cmd {
@@ -3734,84 +3845,96 @@ func prependSourceCredential(items []appconfig.SourceCredential, credential appc
 
 func (m Model) loadDetails() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
-		defer cancel()
-		media, err := m.service.Details(ctx, m.selectedSource, m.selectedMedia)
-		malID := 0
-		if m.resolvingEpisode != nil {
-			malID = m.resolvingEpisode.MALID
-		}
-		if err == nil && m.resolvingEpisode != nil && m.resolvingEpisode.MediaID != 0 {
-			catalogMetadata, metadataErr := m.anilistClient.EpisodeMetadata(ctx, m.resolvingEpisode.MediaID)
-			if metadataErr == nil {
-				if malID == 0 {
-					malID = catalogMetadata.MALID
-				}
-				for index := range media.Episodes {
-					number := normalizedEpisodeNumber(media.Episodes[index].Number())
-					if episodeMetadata, ok := catalogMetadata.Episodes[number]; ok {
-						media.Episodes[index].Title = episodeMetadata.Title
-						media.Episodes[index].Description = episodeMetadata.Description
-						if media.Episodes[index].Thumbnail == "" {
-							media.Episodes[index].Thumbnail = episodeMetadata.Image
+		var (
+			media catalog.Media
+			malID int
+		)
+		err := retryOnTimeout(2, m.requestTimeout(), func(ctx context.Context) error {
+			media, malID = catalog.Media{}, 0
+			var callErr error
+			media, callErr = m.service.Details(ctx, m.selectedSource, m.selectedMedia)
+			if m.resolvingEpisode != nil {
+				malID = m.resolvingEpisode.MALID
+			}
+			if callErr == nil && m.resolvingEpisode != nil && m.resolvingEpisode.MediaID != 0 {
+				catalogMetadata, metadataErr := m.anilistClient.EpisodeMetadata(ctx, m.resolvingEpisode.MediaID)
+				if metadataErr == nil {
+					if malID == 0 {
+						malID = catalogMetadata.MALID
+					}
+					for index := range media.Episodes {
+						number := normalizedEpisodeNumber(media.Episodes[index].Number())
+						if episodeMetadata, ok := catalogMetadata.Episodes[number]; ok {
+							media.Episodes[index].Title = episodeMetadata.Title
+							media.Episodes[index].Description = episodeMetadata.Description
+							if media.Episodes[index].Thumbnail == "" {
+								media.Episodes[index].Thumbnail = episodeMetadata.Image
+							}
 						}
 					}
 				}
 			}
-		}
+			return callErr
+		})
 		return detailsMsg{media: media, malID: malID, err: err}
 	}
 }
 
 func (m Model) loadVideos() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
-		defer cancel()
 		var (
 			items           []catalog.Video
 			videoErr        error
 			episodeMetadata *anilist.EpisodeMetadata
 			malID           int
-			wait            sync.WaitGroup
 		)
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			items, videoErr = m.service.Videos(ctx, m.selectedSource, m.selectedEpisode)
-		}()
-
-		mediaID := 0
-		if m.pendingPlayback != nil {
-			mediaID = m.pendingPlayback.AniListMediaID
-		}
-		if mediaID == 0 && m.resolvingEpisode != nil {
-			mediaID = m.resolvingEpisode.MediaID
-		}
-		if m.pendingPlayback != nil && mediaID != 0 {
+		err := retryOnTimeout(2, m.requestTimeout(), func(ctx context.Context) error {
+			items, videoErr = nil, nil
+			episodeMetadata, malID = nil, 0
+			var wait sync.WaitGroup
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
-				metadata, err := m.anilistClient.EpisodeMetadata(ctx, mediaID)
-				if err != nil {
-					return
-				}
-				malID = metadata.MALID
-				if episode, ok := metadata.Episodes[normalizedEpisodeNumber(m.selectedEpisode.Number())]; ok {
-					episodeCopy := episode
-					episodeMetadata = &episodeCopy
-				}
+				items, videoErr = m.service.Videos(ctx, m.selectedSource, m.selectedEpisode)
 			}()
-		}
-		wait.Wait()
-		return videosMsg{items: items, episodeMetadata: episodeMetadata, malID: malID, err: videoErr}
+
+			mediaID := 0
+			if m.pendingPlayback != nil {
+				mediaID = m.pendingPlayback.AniListMediaID
+			}
+			if mediaID == 0 && m.resolvingEpisode != nil {
+				mediaID = m.resolvingEpisode.MediaID
+			}
+			if m.pendingPlayback != nil && mediaID != 0 {
+				wait.Add(1)
+				go func() {
+					defer wait.Done()
+					metadata, err := m.anilistClient.EpisodeMetadata(ctx, mediaID)
+					if err != nil {
+						return
+					}
+					malID = metadata.MALID
+					if episode, ok := metadata.Episodes[normalizedEpisodeNumber(m.selectedEpisode.Number())]; ok {
+						episodeCopy := episode
+						episodeMetadata = &episodeCopy
+					}
+				}()
+			}
+			wait.Wait()
+			return videoErr
+		})
+		return videosMsg{items: items, episodeMetadata: episodeMetadata, malID: malID, err: err}
 	}
 }
 
 func (m Model) loadPages() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), extensionRequestTimeout)
-		defer cancel()
-		items, err := m.service.Pages(ctx, m.selectedSource, m.selectedEpisode)
+		var items []catalog.Page
+		err := retryOnTimeout(2, m.requestTimeout(), func(ctx context.Context) error {
+			var callErr error
+			items, callErr = m.service.Pages(ctx, m.selectedSource, m.selectedEpisode)
+			return callErr
+		})
 		return pagesMsg{items: items, err: err}
 	}
 }

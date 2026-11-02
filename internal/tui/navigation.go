@@ -217,6 +217,7 @@ var keyHelpSections = []keyHelpSection{
 		{"Enter", "Submit"},
 		{"Esc", "Cancel"},
 		{"Ctrl+O", "Open authorization/source page"},
+		{"Ctrl+E", "Switch extension during Cloudflare recovery"},
 		{"Ctrl+U", "Clear Cloudflare input"},
 	}},
 }

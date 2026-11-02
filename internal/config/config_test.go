@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultUpdateChecksEnabledUnlessDisabled(t *testing.T) {
@@ -223,6 +224,58 @@ func TestLoadSplitsCombinedTOMLAndKeepsBackup(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(directory, "state.json")); err != nil {
 		t.Fatalf("state.json missing: %v", err)
+	}
+}
+
+func TestExtensionTimeoutDefaultsAndClamps(t *testing.T) {
+	t.Parallel()
+	if got := (Config{}).ExtensionRequestTimeout(); got != DefaultExtensionTimeout {
+		t.Fatalf("default extension timeout = %s, want %s", got, DefaultExtensionTimeout)
+	}
+	for _, test := range []struct {
+		seconds int
+		want    time.Duration
+	}{
+		{seconds: 3, want: 5 * time.Second},
+		{seconds: 5, want: 5 * time.Second},
+		{seconds: 45, want: 45 * time.Second},
+		{seconds: 120, want: 120 * time.Second},
+		{seconds: 121, want: 120 * time.Second},
+		{seconds: 0, want: 5 * time.Second},
+		{seconds: -10, want: 5 * time.Second},
+	} {
+		seconds := test.seconds
+		if got := (Config{ExtensionTimeout: &seconds}).ExtensionRequestTimeout(); got != test.want {
+			t.Errorf("extension timeout for %ds = %s, want %s", test.seconds, got, test.want)
+		}
+	}
+}
+
+func TestExtensionTimeoutPersistsInTOML(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.toml")
+	store := NewStore(path)
+	seconds := 42
+	if err := store.Save(Config{ExtensionTimeout: &seconds}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "extension_timeout = 42") {
+		t.Fatalf("config.toml missing extension timeout: %s", data)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ExtensionTimeout == nil || *loaded.ExtensionTimeout != 42 {
+		t.Fatalf("loaded extension timeout = %v", loaded.ExtensionTimeout)
+	}
+	if got := loaded.ExtensionRequestTimeout(); got != 42*time.Second {
+		t.Fatalf("loaded request timeout = %s, want 42s", got)
 	}
 }
 

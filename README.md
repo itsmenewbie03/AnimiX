@@ -53,9 +53,12 @@ remotely-watched marker in local history, keeping matched episodes out of Resume
 across relaunches and AniList progress rollbacks without deleting their saved
 playback position.
 
-Extension requests are bounded per call. The default is 10 seconds; raise it for
-slow sources such as Anikoto, which can take 5–7 seconds to return video links.
-Values are clamped to 5–120 seconds:
+### Extension request timeout
+
+`extension_timeout` sets the per-request guard for search, details, video, and
+page calls, in seconds. The default is `10`; raise it for slow sources such as
+Anikoto, which can take 5–7 seconds to return video links. Values are clamped to
+5–120 seconds:
 
 ```toml
 extension_timeout = 20

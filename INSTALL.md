@@ -198,6 +198,20 @@ source and version:
 The latest install becomes the default and is recorded in
 `~/.config/animix/runtime/current`. Use `--runtime` to override it.
 
+### Slow sources and request timeouts
+
+AnimiX gives each extension request 10 seconds by default. Some sources need
+longer; Anikoto, for example, can take 5–7 seconds to return video links. Raise
+the per-request guard in `~/.config/animix/config.toml`:
+
+```toml
+extension_timeout = 20
+```
+
+The value is in seconds and is clamped to 5–120. A timed-out request is retried
+once automatically, then reported as a retryable failure. Timeouts never open
+Cloudflare recovery, so this setting is safe to raise for slow sources.
+
 ## Build from source
 
 ```sh

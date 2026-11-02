@@ -27,6 +27,8 @@ type fakeDiscord struct {
 func (f *fakeDiscord) Configure(settings discord.Settings) {
 	f.settings = settings
 	f.status.Enabled, f.status.HasToken = settings.Enabled, settings.Token != ""
+	f.status.Transport = settings.Transport
+	f.status.AutoDisabled = false
 	f.status.HasApplicationID = settings.ApplicationID != ""
 	f.status.ShowBrowsing, f.status.ShowArtwork = settings.ShowBrowsing, settings.ShowArtwork
 	if settings.ShowArtwork {
@@ -79,6 +81,9 @@ func TestDiscordTokenIsMaskedAndSavingDoesNotEnableSharing(t *testing.T) {
 	if config.DiscordToken != "private-fixture-token" || config.DiscordPreferences().Enabled || presence.settings.Enabled {
 		t.Fatal("saving token unexpectedly enabled sharing or lost the credential")
 	}
+	if config.DiscordPreferences().Transport != string(discord.TransportGateway) {
+		t.Fatal("setting a token did not explicitly select Gateway mode")
+	}
 	if model.discordInput.Value() != "" {
 		t.Fatal("token input retained the secret after submission")
 	}
@@ -91,6 +96,42 @@ func TestDiscordTokenIsMaskedAndSavingDoesNotEnableSharing(t *testing.T) {
 	config, err = store.Load()
 	if err != nil || config.DiscordToken != "" || presence.settings.Enabled {
 		t.Fatalf("sign-out did not clear credential and stop sharing: %v", err)
+	}
+}
+
+func TestDiscordIPCFailurePersistsDisableAndNotifies(t *testing.T) {
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	config := appconfig.Config{Discord: &appconfig.DiscordSettings{Enabled: true, Transport: string(discord.TransportIPC)}}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	presence := &fakeDiscord{status: discord.Status{Enabled: false, Transport: discord.TransportIPC, AutoDisabled: true}}
+	model := New(nil, store, "", "mpv", WithDiscordPresence(presence))
+	updated, command := model.Update(discordTickMsg{})
+	model = updated.(Model)
+	if command == nil || !model.discordAutoDisabled {
+		t.Fatal("IPC auto-disable did not emit a long-lived notification")
+	}
+	loaded, err := store.Load()
+	if err != nil || loaded.DiscordPreferences().Enabled || !loaded.DiscordPreferences().AutoDisabled {
+		t.Fatalf("IPC auto-disable was not persisted: %#v, %v", loaded.Discord, err)
+	}
+}
+
+func TestDiscordAutoDisableWarningIsConsumedOnStartup(t *testing.T) {
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	if err := store.Save(appconfig.Config{Discord: &appconfig.DiscordSettings{AutoDisabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	model := New(nil, store, "", "mpv", WithDiscordPresence(&fakeDiscord{}), WithDiscordAutoDisabled(true))
+	updated, command := model.Update(discordStartupWarningMsg{})
+	model = updated.(Model)
+	if command == nil || model.discordAutoDisabled {
+		t.Fatal("startup did not emit the persisted Discord warning")
+	}
+	config, err := store.Load()
+	if err != nil || config.DiscordPreferences().AutoDisabled {
+		t.Fatalf("startup reminder was not consumed: %#v, %v", config.Discord, err)
 	}
 }
 
@@ -111,6 +152,11 @@ func TestDiscordStopsSharingEvenWhenSignOutCannotBeSaved(t *testing.T) {
 
 func TestDiscordArtworkUsesShippedApplication(t *testing.T) {
 	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	if err := store.Save(appconfig.Config{
+		DiscordToken: "fixture", Discord: &appconfig.DiscordSettings{Transport: string(discord.TransportGateway)},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	presence := &fakeDiscord{}
 	model := New(nil, store, "", "mpv", WithDiscordPresence(presence))
 	model.loading, model.stage = false, stageDiscord

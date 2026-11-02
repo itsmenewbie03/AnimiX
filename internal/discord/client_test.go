@@ -23,6 +23,12 @@ func TestSettingsUseAnimiXApplicationByDefault(t *testing.T) {
 	if settings.ApplicationID != "123" {
 		t.Fatalf("application override = %q", settings.ApplicationID)
 	}
+	if settings.Transport != TransportIPC {
+		t.Fatalf("tokenless default transport = %q", settings.Transport)
+	}
+	if got := (Settings{Token: "existing"}).withDefaults().Transport; got != TransportGateway {
+		t.Fatalf("existing token default transport = %q", got)
+	}
 }
 
 type fakeConnection struct {

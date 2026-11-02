@@ -20,6 +20,8 @@ type DiscordPresence interface {
 	Status() discord.Status
 }
 
+type discordStartupWarningMsg struct{}
+
 func WithDiscordPresence(presence DiscordPresence) Option {
 	return func(model *Model) { model.discord = presence }
 }
@@ -28,15 +30,25 @@ func WithAppContext(ctx context.Context) Option {
 	return func(model *Model) { model.appContext = ctx }
 }
 
+func WithDiscordAutoDisabled(disabled bool) Option {
+	return func(model *Model) { model.discordAutoDisabled = disabled }
+}
+
 func discordSettings(config appconfig.Config) discord.Settings {
 	prefs := config.DiscordPreferences()
+	transport := discord.Transport(prefs.Transport)
+	if transport == "" && config.DiscordToken != "" {
+		transport = discord.TransportGateway
+	} else if transport == "" {
+		transport = discord.TransportIPC
+	}
 	applicationID := strings.TrimSpace(prefs.ApplicationID)
 	if applicationID == "" {
 		applicationID = discord.DefaultApplicationID
 	}
 	return discord.Settings{
-		Enabled: prefs.Enabled, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
-		ApplicationID: applicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork,
+		Enabled: prefs.Enabled, Transport: transport, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
+		ApplicationID: applicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork && transport != discord.TransportIPC,
 	}
 }
 
@@ -86,7 +98,11 @@ func (m Model) handleDiscordKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = fmt.Errorf("Discord user-session token is required")
 				return m, nil
 			}
-			m.err = m.saveDiscord(func(config *appconfig.Config) { config.DiscordToken = token }, false)
+			m.err = m.saveDiscord(func(config *appconfig.Config) {
+				config.DiscordToken = token
+				config.Discord.Transport = string(discord.TransportGateway)
+				config.Discord.AutoDisabled = false
+			}, false)
 			m.discordInput.SetValue("")
 			m.discordInput.Blur()
 			m.stage = stageDiscord
@@ -116,22 +132,48 @@ func (m Model) handleDiscordKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.discordInput.Focus()
 		return m, textinput.Blink
 	case "e":
-		m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.Enabled = !status.Enabled }, status.Enabled)
+		m.err = m.saveDiscord(func(config *appconfig.Config) {
+			config.Discord.Enabled = !status.Enabled
+			config.Discord.AutoDisabled = false
+			if config.Discord.Transport == "" {
+				config.Discord.Transport = string(discord.TransportIPC)
+			}
+		}, status.Enabled)
+		m.discordAutoDisabled = false
+	case "i":
+		m.err = m.saveDiscord(func(config *appconfig.Config) {
+			config.Discord.Transport = string(discord.TransportIPC)
+			config.Discord.AutoDisabled = false
+		}, true)
+		m.discordAutoDisabled = false
 	case "b":
 		m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.ShowBrowsing = !status.ShowBrowsing }, false)
 	case "a":
-		m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.ShowArtwork = !status.ShowArtwork }, false)
+		if status.Transport == discord.TransportIPC {
+			m.err = fmt.Errorf("poster artwork is only available in Gateway mode")
+		} else {
+			m.err = m.saveDiscord(func(config *appconfig.Config) { config.Discord.ShowArtwork = !status.ShowArtwork }, false)
+		}
 	case "x":
 		m.err = m.saveDiscord(func(config *appconfig.Config) {
 			config.DiscordToken = ""
 			config.Discord.Enabled = false
+			config.Discord.AutoDisabled = false
 		}, true)
 	case "r":
 		if m.configStore != nil {
 			config, err := m.configStore.Load()
 			m.err = err
 			if err == nil {
-				m.discord.Configure(discordSettings(config))
+				if config.DiscordPreferences().AutoDisabled {
+					m.err = m.saveDiscord(func(config *appconfig.Config) {
+						config.Discord.Enabled = true
+						config.Discord.AutoDisabled = false
+					}, false)
+					m.discordAutoDisabled = false
+				} else {
+					m.discord.Configure(discordSettings(config))
+				}
 			}
 		}
 	}
@@ -160,8 +202,8 @@ func (m Model) discordView() string {
 	}
 	var output strings.Builder
 	output.WriteString(titleStyle.Render("Discord presence") + "\n\n")
-	fmt.Fprintf(&output, "Sharing: %s\nBrowsing: %s\nPoster artwork: %s\nToken: %s\nConnection: %s\n",
-		flag(status.Enabled), flag(status.ShowBrowsing), flag(status.ShowArtwork), credential, status.State)
+	fmt.Fprintf(&output, "Sharing: %s\nTransport: %s\nBrowsing: %s\nPoster artwork: %s\nGateway token: %s\nConnection: %s\n",
+		flag(status.Enabled), status.Transport, flag(status.ShowBrowsing), flag(status.ShowArtwork), credential, status.State)
 	if status.ShowArtwork && !status.HasApplicationID {
 		output.WriteString("Poster artwork needs application_id in config.toml.\n")
 	} else if status.ShowArtwork {
@@ -189,7 +231,11 @@ func (m Model) discordView() string {
 	if status.State == discord.RetryWait {
 		fmt.Fprintf(&output, "Retry: %s\n", status.RetryAt.Local().Format("15:04:05"))
 	}
-	output.WriteString("\nShares episode/chapter information directly with Discord.\nThe Discord desktop app can be closed.\n\n")
-	output.WriteString(helpStyle.Render("e sharing on/off • t set token • b browsing on/off\na poster artwork on/off • r retry • x forget token • esc home • q quit"))
+	if status.Transport == discord.TransportIPC {
+		output.WriteString("\nUses Discord's official local IPC. The Discord desktop client must be running.\n\n")
+	} else {
+		output.WriteString("\nGateway mode is unofficial and allows sharing without the Discord desktop client.\n\n")
+	}
+	output.WriteString(helpStyle.Render("e sharing on/off • i use desktop IPC • t set Gateway token\nb browsing on/off • a poster artwork on/off • r retry • x forget token • esc home • q quit"))
 	return output.String()
 }

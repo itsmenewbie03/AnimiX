@@ -88,6 +88,19 @@ func NewClient() *Client {
 	}
 }
 
+func (c *Client) Viewer(ctx context.Context, token string) (Viewer, error) {
+	var data struct {
+		Viewer Viewer `json:"Viewer"`
+	}
+	if err := c.call(ctx, token, `query { Viewer { id name } }`, nil, &data); err != nil {
+		return Viewer{}, err
+	}
+	if data.Viewer.ID == 0 {
+		return Viewer{}, fmt.Errorf("AniList response did not include a viewer")
+	}
+	return data.Viewer, nil
+}
+
 func (c *Client) EpisodeMetadata(ctx context.Context, mediaID int) (EpisodeCatalog, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("%s?anilist_id=%d", c.episodeMetadataEndpoint, mediaID), nil)
@@ -141,10 +154,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (c *Client) Library(ctx context.Context, token string) (Library, error) {
-	var viewerData struct {
-		Viewer Viewer `json:"Viewer"`
-	}
-	if err := c.call(ctx, token, `query { Viewer { id name } }`, nil, &viewerData); err != nil {
+	viewer, err := c.Viewer(ctx, token)
+	if err != nil {
 		return Library{}, err
 	}
 	const query = `
@@ -198,10 +209,10 @@ query ($userId: Int!) {
 		Anime collection `json:"anime"`
 		Manga collection `json:"manga"`
 	}
-	if err := c.call(ctx, token, query, map[string]any{"userId": viewerData.Viewer.ID}, &data); err != nil {
+	if err := c.call(ctx, token, query, map[string]any{"userId": viewer.ID}, &data); err != nil {
 		return Library{}, err
 	}
-	result := Library{Viewer: viewerData.Viewer}
+	result := Library{Viewer: viewer}
 	appendCollection := func(value collection) {
 		entries := make([]rawEntry, 0)
 		for _, list := range value.Lists {

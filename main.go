@@ -14,13 +14,16 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/itsmenewbie03/animix/internal/anilist"
 	"github.com/itsmenewbie03/animix/internal/bridge"
 	"github.com/itsmenewbie03/animix/internal/browser"
 	"github.com/itsmenewbie03/animix/internal/catalog"
 	appconfig "github.com/itsmenewbie03/animix/internal/config"
 	"github.com/itsmenewbie03/animix/internal/discord"
 	"github.com/itsmenewbie03/animix/internal/mangareader"
+	"github.com/itsmenewbie03/animix/internal/repository"
 	anyruntime "github.com/itsmenewbie03/animix/internal/runtime"
+	appsetup "github.com/itsmenewbie03/animix/internal/setup"
 	"github.com/itsmenewbie03/animix/internal/tui"
 	appupdate "github.com/itsmenewbie03/animix/internal/update"
 )
@@ -52,6 +55,7 @@ func run() error {
 	var installRuntime installRuntimeFlag
 	flag.Var(&installRuntime, "install-runtime", "install a runtime: bare for latest upstream, fork@latest, upstream@v2.7.3")
 	diagnose := flag.Bool("diagnose", false, "verify the runtime and list installed sources without opening the TUI")
+	setupRecommended := flag.Bool("setup", false, "install and configure the recommended runtime, repository, and extension")
 	editConfig := flag.Bool("e", false, "open the AnimiX configuration in $VISUAL or $EDITOR")
 	os.Args = append([]string{os.Args[0]}, normalizeInstallArgs(os.Args[1:])...)
 	flag.Parse()
@@ -62,6 +66,12 @@ func run() error {
 			runtimeFlagSet = true
 		}
 	})
+	if *setupRecommended && runtimeFlagSet {
+		return fmt.Errorf("--setup cannot be combined with --runtime; setup selects the managed recommended runtime")
+	}
+	if *setupRecommended && installRuntime.enabled {
+		return fmt.Errorf("--setup cannot be combined with --install-runtime; setup installs fork@latest")
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -74,6 +84,29 @@ func run() error {
 			return err
 		}
 		return nil
+	}
+	if *setupRecommended {
+		javaVersion, err := appsetup.CheckRequirements(*javaPath, *playerPath)
+		if err != nil {
+			return fmt.Errorf("setup preflight: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Java %d and %s detected.\n", javaVersion, *playerPath)
+		release, err := anyruntime.Resolve(ctx, "fork@latest")
+		if err != nil {
+			return fmt.Errorf("resolve recommended runtime: %w", err)
+		}
+		destination, err := anyruntime.Path(release.Source, release.Version)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Installing recommended runtime %s…\n", release.Version)
+		if err := anyruntime.Install(ctx, release, destination); err != nil {
+			return fmt.Errorf("install recommended runtime: %w", err)
+		}
+		if err := anyruntime.SetCurrent(release.Source, release.Version); err != nil {
+			return fmt.Errorf("select recommended runtime: %w", err)
+		}
+		*runtimePath = destination
 	}
 	config, err := store.Load()
 	if err != nil {
@@ -119,6 +152,27 @@ func run() error {
 	}
 	defer client.Close()
 	service := catalog.NewService(client)
+	if *setupRecommended {
+		setupContext, setupCancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer setupCancel()
+		setupService := appsetup.Service{
+			Repositories: repository.NewClient(),
+			Installer:    repository.NewInstaller(service),
+			Catalog:      service,
+			AniList:      anilist.NewClient(),
+			Store:        store,
+			Prompt:       appsetup.NewTerminalPrompter(os.Stdin, os.Stderr, browser.Open),
+			Output:       os.Stderr,
+		}
+		if err := setupService.Run(setupContext, *extensionsPath); err != nil {
+			return fmt.Errorf("recommended setup incomplete: %w (run animix --setup to retry)", err)
+		}
+		config, err = store.Load()
+		if err != nil {
+			return fmt.Errorf("reload config after setup: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, "Recommended setup complete. Launching AnimiX…")
+	}
 	reader := mangareader.New(browser.Open)
 	defer reader.Close()
 
@@ -138,9 +192,15 @@ func run() error {
 
 	presence := discord.New(ctx)
 	prefs := config.DiscordPreferences()
+	transport := discord.Transport(prefs.Transport)
+	if transport == "" && config.DiscordToken != "" {
+		transport = discord.TransportGateway
+	} else if transport == "" {
+		transport = discord.TransportIPC
+	}
 	presence.Configure(discord.Settings{
-		Enabled: prefs.Enabled, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
-		ApplicationID: prefs.ApplicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork,
+		Enabled: prefs.Enabled, Transport: transport, ShowBrowsing: prefs.ShowBrowsing, Token: config.DiscordToken,
+		ApplicationID: prefs.ApplicationID, LargeImage: prefs.LargeImage, ShowArtwork: prefs.ShowArtwork && transport != discord.TransportIPC,
 	})
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 3*time.Second)
@@ -150,6 +210,7 @@ func run() error {
 	options := []tui.Option{
 		tui.WithAppContext(ctx),
 		tui.WithDiscordPresence(presence),
+		tui.WithDiscordAutoDisabled(prefs.AutoDisabled),
 		tui.WithAutoPlayNextEpisode(config.AutoPlayNextEpisode),
 		tui.WithResumeAniListSync(config.ResumeSyncMode()),
 		tui.WithMangaReader(reader),

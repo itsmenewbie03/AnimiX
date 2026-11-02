@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -30,9 +31,28 @@ type Config struct {
 	CheckUpdates          *bool                 `json:"checkUpdates,omitempty" toml:"check_updates,omitempty"`
 	AutoPlayNextEpisode   *bool                 `json:"autoPlayNextEpisode,omitempty" toml:"auto_play_next_episode,omitempty"`
 	SyncResumeWithAniList ResumeAniListSyncMode `json:"syncResumeWithAniList,omitempty" toml:"sync_resume_with_anilist,omitempty"`
+	ExtensionTimeout      *int                  `json:"extensionTimeout,omitempty" toml:"extension_timeout,omitempty"`
 }
 
+const (
+	// DefaultExtensionTimeout is the per-request guard for extension calls.
+	DefaultExtensionTimeout = 10 * time.Second
+	minExtensionTimeout     = 5
+	maxExtensionTimeout     = 120
+)
+
 func (c Config) UpdatesEnabled() bool { return c.CheckUpdates == nil || *c.CheckUpdates }
+
+// ExtensionRequestTimeout returns the configured per-request timeout for
+// extension calls, bounded so a malformed value cannot hang the TUI.
+func (c Config) ExtensionRequestTimeout() time.Duration {
+	seconds := int(DefaultExtensionTimeout / time.Second)
+	if c.ExtensionTimeout != nil {
+		seconds = *c.ExtensionTimeout
+	}
+	seconds = max(minExtensionTimeout, min(maxExtensionTimeout, seconds))
+	return time.Duration(seconds) * time.Second
+}
 
 // Discord sharing is opt-in, including when a credential has already been saved.
 type DiscordSettings struct {
@@ -344,6 +364,7 @@ type settings struct {
 	CheckUpdates          *bool                 `toml:"check_updates,omitempty"`
 	AutoPlayNextEpisode   *bool                 `toml:"auto_play_next_episode,omitempty"`
 	SyncResumeWithAniList ResumeAniListSyncMode `toml:"sync_resume_with_anilist,omitempty"`
+	ExtensionTimeout      *int                  `toml:"extension_timeout,omitempty"`
 }
 
 type state struct {
@@ -371,6 +392,7 @@ func (s *Store) Load() (Config, error) {
 		result.CheckUpdates = values.CheckUpdates
 		result.AutoPlayNextEpisode = values.AutoPlayNextEpisode
 		result.SyncResumeWithAniList = values.SyncResumeWithAniList
+		result.ExtensionTimeout = values.ExtensionTimeout
 		result.Discord = values.Discord
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
@@ -406,7 +428,7 @@ func (s *Store) writeSettings(config Config) error {
 	encodeErr := toml.NewEncoder(file).Encode(settings{
 		Discord:      config.Discord,
 		CheckUpdates: config.CheckUpdates, AutoPlayNextEpisode: config.AutoPlayNextEpisode,
-		SyncResumeWithAniList: config.SyncResumeWithAniList,
+		SyncResumeWithAniList: config.SyncResumeWithAniList, ExtensionTimeout: config.ExtensionTimeout,
 	})
 	closeErr := file.Close()
 	if encodeErr != nil {

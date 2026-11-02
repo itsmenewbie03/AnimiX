@@ -237,12 +237,34 @@ func (m Model) View() string {
 		body.WriteString("Source: " + m.selectedSource.Name + "\nDomain: " + m.selectedSource.BaseURL + "\n\n")
 		body.WriteString("Open the source in the same browser whose User-Agent you will provide, complete the challenge, then copy its Cookie request header. Credentials are stored locally with user-only permissions.\n\n")
 		body.WriteString("Cookie header\n" + m.cookieInput.View())
-		body.WriteString("\n\n" + helpStyle.Render("ctrl+o open source • ctrl+u clear • enter continue • esc cancel"))
+		body.WriteString("\n\n" + helpStyle.Render("ctrl+o open source • ctrl+e switch extension\nctrl+u clear • enter continue • esc cancel"))
 	case stageCloudflareUserAgent:
 		body.WriteString(titleStyle.Render("Cloudflare recovery") + "\n\n")
 		body.WriteString("Paste the exact User-Agent from the browser that produced the cookie. Cloudflare clearance may be bound to it.\n\n")
 		body.WriteString("User-Agent\n" + m.userAgentInput.View())
-		body.WriteString("\n\n" + helpStyle.Render("ctrl+o open source • ctrl+u clear • enter apply and retry • esc back"))
+		body.WriteString("\n\n" + helpStyle.Render("ctrl+o open source • ctrl+e switch extension\nctrl+u clear • enter apply and retry • esc back"))
+	case stageCloudflareSource:
+		label := "anime"
+		if !m.selectedSource.IsAnime() {
+			label = "manga"
+		}
+		body.WriteString(titleStyle.Render("Cloudflare recovery") + "\n\n")
+		body.WriteString("Switch " + label + " extension\n\n")
+		sources := m.resolutionSources()
+		items := make([]string, len(sources))
+		for index, source := range sources {
+			active := ""
+			if source.ID == m.selectedSource.ID {
+				active = "  • current"
+			}
+			items[index] = fmt.Sprintf("%s  %s%s", source.Name, strings.ToUpper(source.Language), active)
+		}
+		if len(items) == 0 {
+			body.WriteString(helpStyle.Render("No compatible extensions are installed."))
+		} else {
+			body.WriteString(m.listView(items))
+		}
+		body.WriteString("\n" + helpStyle.Render("enter search with source • esc back to credentials • q quit"))
 	case stageUpdatePrompt:
 		body.WriteString(titleStyle.Render("Update AnimiX") + "\n\n")
 		body.WriteString(m.updateProgressLabel() + "\n\n")
@@ -575,7 +597,7 @@ func (m Model) breadcrumb() string {
 		return strings.Join(parts, " › ")
 	}
 	contentStage := m.stage
-	if m.stage == stageCloudflareCookie || m.stage == stageCloudflareUserAgent {
+	if m.stage == stageCloudflareCookie || m.stage == stageCloudflareUserAgent || m.stage == stageCloudflareSource {
 		contentStage = m.cloudflareReturn
 	}
 	parts := []string{"Home"}

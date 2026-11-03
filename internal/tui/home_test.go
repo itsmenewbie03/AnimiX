@@ -105,6 +105,22 @@ func TestUpdateBindingDoesNotStealTextInput(t *testing.T) {
 	}
 }
 
+func TestCtrlQQuitsGlobally(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = true
+	model.stage = stageSearch
+	model.search.Focus()
+
+	_, command := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if command == nil {
+		t.Fatal("Ctrl+Q did not quit")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatalf("Ctrl+Q command returned %T, want tea.QuitMsg", command())
+	}
+}
+
 func TestFeedbackUsesNotificationsInsteadOfInlineBanners(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")

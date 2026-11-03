@@ -1352,7 +1352,7 @@ func (m Model) flushFeedback(command tea.Cmd) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if key.String() == "ctrl+c" {
+	if key.String() == "ctrl+c" || key.String() == "ctrl+q" {
 		return m, tea.Quit
 	}
 	if m.showKeyHelp {

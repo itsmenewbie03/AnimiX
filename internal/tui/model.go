@@ -972,6 +972,30 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitForMangaReaderProgress()
 	case playerFinishedMsg:
 		var syncCommand, notificationCommand tea.Cmd
+		if playbackLoadFailed(msg.err, msg.progress) {
+			failedStream := "selected stream"
+			if m.cursor >= 0 && m.cursor < len(m.videos) {
+				failedStream = firstNonEmpty(streamLabel(m.videos[m.cursor]), failedStream)
+			}
+			keepRemembering := m.rememberStream
+			hadPreference := m.hasStreamPreference()
+			if hadPreference {
+				m.clearStreamPreference()
+			}
+			clearErr := m.err
+			m.rememberStream = keepRemembering
+			m.autoPlay = autoPlayState{}
+			m.loading = false
+			if len(m.videos) > 0 {
+				m.stage = stageStreams
+			}
+			message := failedStream + " failed to play. Select another server."
+			if clearErr != nil {
+				message += "; " + clearErr.Error()
+			}
+			m.err = errors.New(message)
+			return m, nil
+		}
 		if msg.err != nil {
 			m.err = fmt.Errorf("player: %w", msg.err)
 		}
@@ -2203,6 +2227,17 @@ func matchingVideoIndex(videos []catalog.Video, quality string) int {
 		}
 	}
 	return 0
+}
+
+// playbackLoadFailed identifies failures before mpv advanced playback.
+// Malformed HLS can be misdetected as a still image and inherit the playlist's
+// duration without ever decoding playable video, so duration is not evidence
+// that the selected stream worked.
+func playbackLoadFailed(runErr error, progress *player.Progress) bool {
+	if runErr == nil || progress == nil || progress.ProxyFailure {
+		return false
+	}
+	return strings.EqualFold(progress.Reason, "error") && progress.Position <= 0
 }
 
 func isLocalProxyURL(value string) bool {

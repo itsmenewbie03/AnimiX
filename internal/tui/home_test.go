@@ -2177,6 +2177,81 @@ func TestRememberServerSavesAndClearingRemovesPreference(t *testing.T) {
 	}
 }
 
+func TestInvalidRememberedStreamClearsPreferenceAndReturnsToPicker(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	preference := appconfig.StreamPreference{MediaID: 42, Value: "Broken - 1080p"}
+	if err := store.SaveStreamPreference(preference); err != nil {
+		t.Fatal(err)
+	}
+	model := New(nil, store, "", "mpv")
+	model.stage = stageStreams
+	model.loading = false
+	model.resolvingEpisode = &anilist.Entry{MediaID: 42, Title: "Series"}
+	model.videos = []catalog.Video{
+		{Quality: "Working - 720p", URL: "https://example.test/working.m3u8"},
+		{Quality: "Broken - 1080p", URL: "https://example.test/broken.m3u8"},
+	}
+	model.cursor = 1
+	model.rememberStream = true
+	model.streamPreferences = []appconfig.StreamPreference{preference}
+
+	updated, _ := model.update(playerFinishedMsg{
+		err:      errors.New("exit status 2"),
+		progress: &player.Progress{Reason: "error"},
+	})
+	model = updated.(Model)
+
+	if model.stage != stageStreams || model.cursor != 1 {
+		t.Fatalf("failed playback state = stage %d cursor %d", model.stage, model.cursor)
+	}
+	if !model.rememberStream || model.hasStreamPreference() {
+		t.Fatalf("remember state after failure: enabled=%t preferences=%#v", model.rememberStream, model.streamPreferences)
+	}
+	if model.err == nil || model.err.Error() != "Broken - 1080p failed to play. Select another server." {
+		t.Fatalf("failure feedback = %v", model.err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.StreamPreferences) != 0 {
+		t.Fatalf("persisted stream preference = %#v", loaded.StreamPreferences)
+	}
+
+	model.cursor = 0
+	model.rememberSelectedStream()
+	loaded, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.StreamPreferences) != 1 || loaded.StreamPreferences[0].Value != "Working - 720p" {
+		t.Fatalf("replacement stream was not remembered: %#v", loaded.StreamPreferences)
+	}
+}
+
+func TestPlaybackLoadFailureRequiresNoPlayableTimeline(t *testing.T) {
+	t.Parallel()
+	if !playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Reason: "error"}) {
+		t.Fatal("pre-load player error was not classified as a stream load failure")
+	}
+	if !playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Duration: 2, Reason: "error"}) {
+		t.Fatal("malformed HLS playlist duration was treated as playable video")
+	}
+	if playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Position: 5, Duration: 100, Reason: "error"}) {
+		t.Fatal("failure after playback advanced was classified as an invalid stream")
+	}
+	if playbackLoadFailed(nil, &player.Progress{}) {
+		t.Fatal("successful player exit was classified as an invalid stream")
+	}
+	if playbackLoadFailed(errors.New("mpv executable missing"), nil) {
+		t.Fatal("player launch failure was classified as an invalid stream")
+	}
+	if playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Reason: "proxy-error", ProxyFailure: true}) {
+		t.Fatal("local proxy failure was classified as an invalid stream")
+	}
+}
+
 func TestDubPreferenceSkipsSubbedStream(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")

@@ -105,6 +105,22 @@ func TestUpdateBindingDoesNotStealTextInput(t *testing.T) {
 	}
 }
 
+func TestCtrlQQuitsGlobally(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.loading = true
+	model.stage = stageSearch
+	model.search.Focus()
+
+	_, command := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if command == nil {
+		t.Fatal("Ctrl+Q did not quit")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatalf("Ctrl+Q command returned %T, want tea.QuitMsg", command())
+	}
+}
+
 func TestFeedbackUsesNotificationsInsteadOfInlineBanners(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
@@ -2177,6 +2193,81 @@ func TestRememberServerSavesAndClearingRemovesPreference(t *testing.T) {
 	}
 }
 
+func TestInvalidRememberedStreamClearsPreferenceAndReturnsToPicker(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	preference := appconfig.StreamPreference{MediaID: 42, Value: "Broken - 1080p"}
+	if err := store.SaveStreamPreference(preference); err != nil {
+		t.Fatal(err)
+	}
+	model := New(nil, store, "", "mpv")
+	model.stage = stageStreams
+	model.loading = false
+	model.resolvingEpisode = &anilist.Entry{MediaID: 42, Title: "Series"}
+	model.videos = []catalog.Video{
+		{Quality: "Working - 720p", URL: "https://example.test/working.m3u8"},
+		{Quality: "Broken - 1080p", URL: "https://example.test/broken.m3u8"},
+	}
+	model.cursor = 1
+	model.rememberStream = true
+	model.streamPreferences = []appconfig.StreamPreference{preference}
+
+	updated, _ := model.update(playerFinishedMsg{
+		err:      errors.New("exit status 2"),
+		progress: &player.Progress{Reason: "error"},
+	})
+	model = updated.(Model)
+
+	if model.stage != stageStreams || model.cursor != 1 {
+		t.Fatalf("failed playback state = stage %d cursor %d", model.stage, model.cursor)
+	}
+	if !model.rememberStream || model.hasStreamPreference() {
+		t.Fatalf("remember state after failure: enabled=%t preferences=%#v", model.rememberStream, model.streamPreferences)
+	}
+	if model.err == nil || model.err.Error() != "Broken - 1080p failed to play. Select another server." {
+		t.Fatalf("failure feedback = %v", model.err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.StreamPreferences) != 0 {
+		t.Fatalf("persisted stream preference = %#v", loaded.StreamPreferences)
+	}
+
+	model.cursor = 0
+	model.rememberSelectedStream()
+	loaded, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.StreamPreferences) != 1 || loaded.StreamPreferences[0].Value != "Working - 720p" {
+		t.Fatalf("replacement stream was not remembered: %#v", loaded.StreamPreferences)
+	}
+}
+
+func TestPlaybackLoadFailureRequiresNoPlayableTimeline(t *testing.T) {
+	t.Parallel()
+	if !playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Reason: "error"}) {
+		t.Fatal("pre-load player error was not classified as a stream load failure")
+	}
+	if !playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Duration: 2, Reason: "error"}) {
+		t.Fatal("malformed HLS playlist duration was treated as playable video")
+	}
+	if playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Position: 5, Duration: 100, Reason: "error"}) {
+		t.Fatal("failure after playback advanced was classified as an invalid stream")
+	}
+	if playbackLoadFailed(nil, &player.Progress{}) {
+		t.Fatal("successful player exit was classified as an invalid stream")
+	}
+	if playbackLoadFailed(errors.New("mpv executable missing"), nil) {
+		t.Fatal("player launch failure was classified as an invalid stream")
+	}
+	if playbackLoadFailed(errors.New("exit status 2"), &player.Progress{Reason: "proxy-error", ProxyFailure: true}) {
+		t.Fatal("local proxy failure was classified as an invalid stream")
+	}
+}
+
 func TestDubPreferenceSkipsSubbedStream(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
@@ -2275,8 +2366,132 @@ func TestCloudflareRecoveryCanSwitchExtension(t *testing.T) {
 	if model.stage != stageSearch || model.search.Value() != "Cyberpunk: Edgerunners" {
 		t.Fatalf("switch did not restart search: stage=%d query=%q", model.stage, model.search.Value())
 	}
+	if !model.loading {
+		t.Fatal("switch did not start the recovered search")
+	}
 	if model.cloudflareOperation != cloudflareNone {
 		t.Fatal("source switch kept the stale Cloudflare operation")
+	}
+}
+
+func TestCloudflareRecoverySwitchUsesPlaybackTitle(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading, model.cloudflareReturn = stageCloudflareUserAgent, false, stageStreams
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+	model.pendingPlayback = &appconfig.ContinueEntry{
+		Title: "Saved Playback Title", EpisodeNumber: "5",
+	}
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	model.cursor = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if command == nil || !model.loading {
+		t.Fatalf("switch did not search with the playback title: command=%v loading=%t", command, model.loading)
+	}
+	if model.stage != stageSearch || model.search.Value() != "Saved Playback Title" {
+		t.Fatalf("playback query not recovered: stage=%d query=%q", model.stage, model.search.Value())
+	}
+}
+
+func TestCloudflareSearchRecoveryPrefersTypedQuery(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading = stageCloudflareCookie, false
+	model.cloudflareOperation = cloudflareSearch
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+	// Leave an old details screen around to make sure the typed query wins.
+	model.details = catalog.Media{Title: "Previous Show"}
+	model.selectedMedia = catalog.Media{Title: "Previous Result"}
+	model.search.SetValue("Typed Query")
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	model.cursor = 1
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if model.stage != stageSearch || model.search.Value() != "Typed Query" {
+		t.Fatalf("search recovery used the wrong query: stage=%d query=%q", model.stage, model.search.Value())
+	}
+}
+
+func TestCloudflareRecoverySwitchRestartsResolutionFallback(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading = stageCloudflareCookie, false
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+	entry := anilist.Entry{
+		MediaID: 42, Type: "ANIME", Title: "Preferred Title",
+		EnglishTitle: "Localized Title", RomajiTitle: "Romaji Title",
+	}
+	model.resolvingEpisode = &entry
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	model.cursor = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if command == nil || model.selectedSource.ID != "animepahe" || !model.loading {
+		t.Fatalf("switch = source %q loading=%t command=%v", model.selectedSource.ID, model.loading, command)
+	}
+	if model.resolutionQuery != "Preferred Title" || len(model.resolutionSearches) < 2 {
+		t.Fatalf("resolution fallback was not prepared: query=%q searches=%#v", model.resolutionQuery, model.resolutionSearches)
+	}
+	if model.search.Value() != "Preferred Title" {
+		t.Fatalf("search input = %q, want the first resolution title", model.search.Value())
+	}
+
+	updated, command = model.update(searchMsg{pages: catalog.Pages{}})
+	model = updated.(Model)
+	if command == nil || model.resolutionQuery != "Localized Title" {
+		t.Fatalf("resolver did not advance to the next title: query=%q command=%v", model.resolutionQuery, command)
+	}
+
+	updated, command = model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Localized Title", URL: "/match"}}}})
+	model = updated.(Model)
+	if command == nil || model.selectedMedia.URL != "/match" || !model.loading {
+		t.Fatalf("resolver did not accept the fallback title: media=%#v loading=%t command=%v", model.selectedMedia, model.loading, command)
+	}
+}
+
+func TestSearchViewShowsProgressWhileSearching(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 30
+	model.stage = stageSearch
+	model.selectedSource = catalog.Source{Name: "Anikoto"}
+	model.search.SetValue("One Piece")
+
+	model.loading = true
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Searching for One Piece") {
+		t.Fatalf("searching view has no progress line:\n%s", view)
+	}
+	if strings.Contains(view, "enter search") {
+		t.Fatalf("searching view still asks for Enter:\n%s", view)
+	}
+
+	model.loading = false
+	view = ansi.Strip(model.View())
+	if !strings.Contains(view, "enter search") {
+		t.Fatalf("idle search view lost its submit hint:\n%s", view)
 	}
 }
 
@@ -2594,5 +2809,127 @@ func TestSkipTimesBecomeMpvChapterMarkers(t *testing.T) {
 		if chapters[index] != want[index] {
 			t.Fatalf("chapter %d = %#v, want %#v", index, chapters[index], want[index])
 		}
+	}
+}
+
+func TestRemoveSelectedResumeEntry(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	keep := appconfig.ContinueEntry{
+		Title: "Keep", SourceID: "source", MediaURL: "keep",
+		EpisodeNumber: "1", EpisodeName: "Episode 1", Position: 100, Duration: 1000,
+	}
+	remove := appconfig.ContinueEntry{
+		Title: "Remove", SourceID: "source", MediaURL: "remove",
+		EpisodeNumber: "2", EpisodeName: "Episode 2", Position: 200, Duration: 1000,
+	}
+	for _, entry := range []appconfig.ContinueEntry{keep, remove} {
+		if err := store.SaveContinue(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.stage = stageSources
+	model.homeType = "anime"
+	model.homeFocus = homeFocusResumeWatching
+	model.continueWatching = []appconfig.ContinueEntry{keep, remove}
+	model.refreshResumeWatching()
+	model.resumeWatchingList.Select(1)
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model = updated.(Model)
+
+	if len(model.resumeWatchingList.Items()) != 1 {
+		t.Fatalf("Resume items after remove = %#v", model.resumeWatchingList.Items())
+	}
+	if item := model.resumeWatchingList.Items()[0].(resumeWatchingListItem); item.entry.Title != "Keep" {
+		t.Fatalf("removed the wrong Resume entry: %#v", item.entry)
+	}
+	if model.statusTitle != "Removed from Resume" || !strings.Contains(model.status, "Remove") {
+		t.Fatalf("remove feedback = title %q status %q", model.statusTitle, model.status)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].Title != "Keep" {
+		t.Fatalf("persisted ContinueWatching = %#v", loaded.ContinueWatching)
+	}
+}
+
+func TestRemoveSelectedMangaResumeEntry(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	keep := appconfig.MangaReadingEntry{Title: "Keep", SourceID: "source", MediaURL: "keep", Page: 3, TotalPages: 20}
+	remove := appconfig.MangaReadingEntry{Title: "Remove", SourceID: "source", MediaURL: "remove", Page: 4, TotalPages: 20}
+	for _, entry := range []appconfig.MangaReadingEntry{keep, remove} {
+		if err := store.SaveMangaReading(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.stage = stageSources
+	model.homeType = "manga"
+	model.mangaFeed = mangaFeedResume
+	model.mangaReading = []appconfig.MangaReadingEntry{keep, remove}
+	model.refreshMangaHome()
+	model.mangaResumeList.Select(1)
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model = updated.(Model)
+
+	if len(model.mangaResumeList.Items()) != 1 {
+		t.Fatalf("manga Resume items after remove = %#v", model.mangaResumeList.Items())
+	}
+	if item := model.mangaResumeList.Items()[0].(mangaResumeListItem); item.entry.Title != "Keep" {
+		t.Fatalf("removed the wrong manga Resume entry: %#v", item.entry)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MangaReading) != 1 || loaded.MangaReading[0].Title != "Keep" {
+		t.Fatalf("persisted MangaReading = %#v", loaded.MangaReading)
+	}
+}
+
+func TestF5RefreshesHomeFromStore(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	entry := appconfig.ContinueEntry{
+		Title: "Refreshed", SourceID: "source", MediaURL: "media",
+		EpisodeNumber: "3", Position: 120, Duration: 1000,
+	}
+	if err := store.SaveContinue(entry); err != nil {
+		t.Fatal(err)
+	}
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.stage = stageSources
+	model.homeType = "anime"
+	model.homeFocus = homeFocusResumeWatching
+	if len(model.resumeWatchingList.Items()) != 0 {
+		t.Fatal("test Home unexpectedly started with Resume items")
+	}
+
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyF5})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("F5 did not request a Home refresh")
+	}
+	message, ok := command().(repositoriesMsg)
+	if !ok {
+		t.Fatalf("F5 refresh returned %T", message)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+
+	if len(model.resumeWatchingList.Items()) != 1 {
+		t.Fatalf("Resume after F5 = %#v", model.resumeWatchingList.Items())
+	}
+	if item := model.resumeWatchingList.Items()[0].(resumeWatchingListItem); item.entry.Title != "Refreshed" {
+		t.Fatalf("refreshed Resume entry = %#v", item.entry)
 	}
 }

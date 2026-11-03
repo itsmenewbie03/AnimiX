@@ -39,8 +39,17 @@ func (m Model) View() string {
 		}
 	case stageSearch:
 		body.WriteString("Search with " + titleStyle.Render(m.selectedSource.Name) + "\n\n")
-		body.WriteString(m.search.View())
-		body.WriteString("\n\n" + helpStyle.Render("enter search • esc discover"))
+		if m.loading {
+			query := strings.TrimSpace(m.search.Value())
+			if query == "" {
+				body.WriteString(m.spinner.View() + " Searching…")
+			} else {
+				body.WriteString(m.spinner.View() + " Searching for " + titleStyle.Render(query) + "…")
+			}
+		} else {
+			body.WriteString(m.search.View())
+			body.WriteString("\n\n" + helpStyle.Render("enter search • esc discover"))
+		}
 	case stageResults:
 		body.WriteString(m.mediaResultsView())
 		if m.resolvingEpisode != nil {
@@ -264,7 +273,7 @@ func (m Model) View() string {
 		} else {
 			body.WriteString(m.listView(items))
 		}
-		body.WriteString("\n" + helpStyle.Render("enter search with source • esc back to credentials • q quit"))
+		body.WriteString("\n" + helpStyle.Render("enter switch and search • esc back to credentials • q quit"))
 	case stageUpdatePrompt:
 		body.WriteString(titleStyle.Render("Update AnimiX") + "\n\n")
 		body.WriteString(m.updateProgressLabel() + "\n\n")
@@ -385,7 +394,7 @@ func (m Model) sourcesView() string {
 		}
 	}
 
-	output.WriteString("\n" + homeHelp(m.currentLength() > 0))
+	output.WriteString("\n" + m.homeHelp())
 	return output.String()
 }
 
@@ -429,12 +438,23 @@ func homeFeedEmptyMessage(feed homeFocus) string {
 	}
 }
 
-func homeHelp(hasItems bool) string {
-	controls := "d discover • r repositories • t AniList • p Discord • ? help • q quit"
+func (m Model) homeHelp() string {
+	hasItems := m.currentLength() > 0
+	controls := "d discover • r repositories • t AniList • p Discord • f5 refresh • ? help • q quit"
 	if hasItems {
 		controls = "j/k move • gg/G first/last • enter open • / filter • " + controls
 	}
+	if hasItems && m.canRemoveResumeEntry() {
+		controls = "x remove • " + controls
+	}
 	return helpStyle.Render(controls)
+}
+
+func (m Model) canRemoveResumeEntry() bool {
+	if m.homeType == "manga" {
+		return m.mangaFeed == mangaFeedResume && len(m.mangaResumeList.Items()) > 0
+	}
+	return m.homeType == "anime" && m.homeFocus == homeFocusResumeWatching && len(m.resumeWatchingList.Items()) > 0
 }
 
 func continueEpisodeLabel(number, name string) string {

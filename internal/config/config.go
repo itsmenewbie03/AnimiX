@@ -236,6 +236,22 @@ func (s *Store) SaveContinue(entry ContinueEntry) error {
 	return s.Save(config)
 }
 
+func (s *Store) RemoveContinue(entry ContinueEntry) error {
+	config, err := s.Load()
+	if err != nil {
+		return err
+	}
+	filtered := make([]ContinueEntry, 0, len(config.ContinueWatching))
+	for _, existing := range config.ContinueWatching {
+		if existing.SourceID == entry.SourceID && existing.MediaURL == entry.MediaURL {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	config.ContinueWatching = filtered
+	return s.Save(config)
+}
+
 func (s *Store) SaveMangaReading(entry MangaReadingEntry) error {
 	config, err := s.Load()
 	if err != nil {
@@ -252,6 +268,22 @@ func (s *Store) SaveMangaReading(entry MangaReadingEntry) error {
 		}
 	}
 	config.MangaReading = append([]MangaReadingEntry{entry}, filtered...)
+	return s.Save(config)
+}
+
+func (s *Store) RemoveMangaReading(entry MangaReadingEntry) error {
+	config, err := s.Load()
+	if err != nil {
+		return err
+	}
+	filtered := make([]MangaReadingEntry, 0, len(config.MangaReading))
+	for _, existing := range config.MangaReading {
+		if existing.SourceID == entry.SourceID && existing.MediaURL == entry.MediaURL {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	config.MangaReading = filtered
 	return s.Save(config)
 }
 

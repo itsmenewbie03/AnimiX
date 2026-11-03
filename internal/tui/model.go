@@ -972,6 +972,30 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitForMangaReaderProgress()
 	case playerFinishedMsg:
 		var syncCommand, notificationCommand tea.Cmd
+		if playbackLoadFailed(msg.err, msg.progress) {
+			failedStream := "selected stream"
+			if m.cursor >= 0 && m.cursor < len(m.videos) {
+				failedStream = firstNonEmpty(streamLabel(m.videos[m.cursor]), failedStream)
+			}
+			keepRemembering := m.rememberStream
+			hadPreference := m.hasStreamPreference()
+			if hadPreference {
+				m.clearStreamPreference()
+			}
+			clearErr := m.err
+			m.rememberStream = keepRemembering
+			m.autoPlay = autoPlayState{}
+			m.loading = false
+			if len(m.videos) > 0 {
+				m.stage = stageStreams
+			}
+			message := failedStream + " failed to play. Select another server."
+			if clearErr != nil {
+				message += "; " + clearErr.Error()
+			}
+			m.err = errors.New(message)
+			return m, nil
+		}
 		if msg.err != nil {
 			m.err = fmt.Errorf("player: %w", msg.err)
 		}
@@ -1328,7 +1352,7 @@ func (m Model) flushFeedback(command tea.Cmd) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if key.String() == "ctrl+c" {
+	if key.String() == "ctrl+c" || key.String() == "ctrl+q" {
 		return m, tea.Quit
 	}
 	if m.showKeyHelp {
@@ -1732,6 +1756,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.stage, m.cursor, m.err = stageRepositories, 0, nil
 			return m, nil
 		}
+	case "f5":
+		if m.stage == stageSources {
+			return m, m.loadRepositories()
+		}
 	case "t":
 		if m.stage == stageSources {
 			m.err, m.status = nil, ""
@@ -1745,6 +1773,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.loadAniListLibrary(m.anilistToken, true, false))
 		}
 	case "x":
+		if m.stage == stageSources {
+			return m.removeResumeEntry()
+		}
 		if m.stage == stageAniListLibrary {
 			m.loading, m.err = true, nil
 			return m, tea.Batch(m.spinner.Tick, m.logoutAniList())
@@ -2018,6 +2049,9 @@ func (m Model) activateTrackedManga(entry anilist.Entry) (tea.Model, tea.Cmd) {
 
 func (m Model) resumeManga(entry appconfig.MangaReadingEntry) (tea.Model, tea.Cmd) {
 	entry.CoverURL = m.presenceCover(entry.AniListMediaID, entry.CoverURL)
+	// Resuming local history is not a tracked-title resolution. Drop any stale
+	// resolution context before opening the saved chapter.
+	m.clearEpisodeResolution()
 	for _, source := range m.sources {
 		if source.ID != entry.SourceID {
 			continue
@@ -2113,6 +2147,10 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 
 func (m Model) resumePlayback(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
 	m.playbackReturnHome = true
+	// Resuming local history starts a new playback context. Drop any tracked
+	// title left over from a previous resolution so Cloudflare recovery does
+	// not search for the wrong series.
+	m.clearEpisodeResolution()
 	// Resume Watching does not pass through the details screen. Clear any
 	// previously viewed title so autoplay cannot use a stale episode catalog.
 	m.details = catalog.Media{}
@@ -2196,6 +2234,17 @@ func matchingVideoIndex(videos []catalog.Video, quality string) int {
 		}
 	}
 	return 0
+}
+
+// playbackLoadFailed identifies failures before mpv advanced playback.
+// Malformed HLS can be misdetected as a still image and inherit the playlist's
+// duration without ever decoding playable video, so duration is not evidence
+// that the selected stream worked.
+func playbackLoadFailed(runErr error, progress *player.Progress) bool {
+	if runErr == nil || progress == nil || progress.ProxyFailure {
+		return false
+	}
+	return strings.EqualFold(progress.Reason, "error") && progress.Position <= 0
 }
 
 func isLocalProxyURL(value string) bool {
@@ -3193,6 +3242,63 @@ func mangaFeedLabel(feed mangaFeed) string {
 	return mangaStatusLabel(string(feed))
 }
 
+// removeResumeEntry deletes the selected local resume record. Resume is the
+// only Home feed that can be edited: New Episodes and Watching mirror AniList.
+func (m Model) removeResumeEntry() (tea.Model, tea.Cmd) {
+	if m.homeType == "manga" {
+		if m.mangaFeed != mangaFeedResume {
+			return m, nil
+		}
+		selected, ok := m.mangaResumeList.SelectedItem().(mangaResumeListItem)
+		if !ok {
+			return m, nil
+		}
+		if m.configStore != nil {
+			if err := m.configStore.RemoveMangaReading(selected.entry); err != nil {
+				m.err = fmt.Errorf("remove manga from Resume: %w", err)
+				return m, nil
+			}
+		}
+		filtered := make([]appconfig.MangaReadingEntry, 0, len(m.mangaReading))
+		for _, entry := range m.mangaReading {
+			if entry.SourceID == selected.entry.SourceID && entry.MediaURL == selected.entry.MediaURL {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		m.mangaReading = filtered
+		m.refreshMangaHome()
+		m.statusTitle = "Removed from Resume"
+		m.status = selected.entry.Title
+		return m, nil
+	}
+	if m.homeType != "anime" || m.homeFocus != homeFocusResumeWatching {
+		return m, nil
+	}
+	selected, ok := m.resumeWatchingList.SelectedItem().(resumeWatchingListItem)
+	if !ok {
+		return m, nil
+	}
+	if m.configStore != nil {
+		if err := m.configStore.RemoveContinue(selected.entry); err != nil {
+			m.err = fmt.Errorf("remove from Resume: %w", err)
+			return m, nil
+		}
+	}
+	filtered := make([]appconfig.ContinueEntry, 0, len(m.continueWatching))
+	for _, entry := range m.continueWatching {
+		if entry.SourceID == selected.entry.SourceID && entry.MediaURL == selected.entry.MediaURL {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	m.continueWatching = filtered
+	m.refreshResumeWatching()
+	m.statusTitle = "Removed from Resume"
+	m.status = selected.entry.Title + " — " + continueEpisodeLabel(selected.entry.EpisodeNumber, selected.entry.EpisodeName)
+	return m, nil
+}
+
 func (m *Model) refreshResumeWatching() {
 	previous := make(map[string]bool, len(m.resumeWatchingList.Items()))
 	for _, raw := range m.resumeWatchingList.Items() {
@@ -3760,13 +3866,18 @@ func (m Model) switchCloudflareSource(source catalog.Source) (tea.Model, tea.Cmd
 	m.selectedEpisode = catalog.Episode{}
 	m.details = catalog.Media{}
 	m.selectedMedia = catalog.Media{}
-	m.loading, m.err, m.status = true, nil, ""
+	m.err, m.status = nil, ""
 	m.rememberActiveSource(source)
 	if m.resolvingEpisode != nil {
+		// Switching extensions restarts resolution from the first AniList title
+		// variant so the fallback matching still applies to the new source.
 		m.manualMapping = false
 		m.prepareResolutionSearches(*m.resolvingEpisode)
-		query = m.resolutionQuery
+		if m.resolutionQuery != "" {
+			query = m.resolutionQuery
+		}
 	}
+	query = strings.TrimSpace(query)
 	m.stage = stageSearch
 	m.search.SetValue(query)
 	m.search.Focus()
@@ -3774,11 +3885,45 @@ func (m Model) switchCloudflareSource(source catalog.Source) (tea.Model, tea.Cmd
 		m.loading = false
 		return m, textinput.Blink
 	}
+	// Start the search immediately instead of asking the user to submit the
+	// recovered query again.
+	m.loading = true
 	return m, tea.Batch(m.spinner.Tick, m.runSearch(query))
 }
 
 func (m Model) recoverySearchQuery() string {
-	return firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle(), m.resolutionQuery, strings.TrimSpace(m.search.Value()))
+	if m.resolvingEpisode != nil {
+		if query := strings.TrimSpace(m.resolutionQuery); query != "" {
+			return query
+		}
+		if query := firstNonEmpty(
+			m.resolvingEpisode.Title,
+			m.resolvingEpisode.EnglishTitle,
+			m.resolvingEpisode.RomajiTitle,
+			m.resolvingEpisode.NativeTitle,
+		); query != "" {
+			return query
+		}
+	}
+	// Playback recovery clears the details screen and may not have an AniList
+	// resolution target, so prefer the saved playback title.
+	if m.pendingPlayback != nil {
+		if title := strings.TrimSpace(m.pendingPlayback.Title); title != "" {
+			return title
+		}
+	}
+	// A failed search must retry the query the user typed, not a title left
+	// over from an earlier details screen.
+	if m.cloudflareOperation == cloudflareSearch {
+		if query := strings.TrimSpace(m.search.Value()); query != "" {
+			return query
+		}
+	}
+	return firstNonEmpty(
+		m.details.DisplayTitle(),
+		m.selectedMedia.DisplayTitle(),
+		strings.TrimSpace(m.search.Value()),
+	)
 }
 
 func openURL(url string) tea.Cmd {

@@ -182,6 +182,8 @@ var keyHelpSections = []keyHelpSection{
 		{"←/→ or h/l", "Previous / next feed"},
 		{"/", "Filter active feed"},
 		{"c", "Clear active feed filter"},
+		{"x", "Remove selected Resume entry"},
+		{"F5", "Refresh Home"},
 		{"d", "Discover with a source"},
 		{"r", "Extension repositories"},
 		{"t", "AniList"},

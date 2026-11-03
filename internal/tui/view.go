@@ -39,8 +39,17 @@ func (m Model) View() string {
 		}
 	case stageSearch:
 		body.WriteString("Search with " + titleStyle.Render(m.selectedSource.Name) + "\n\n")
-		body.WriteString(m.search.View())
-		body.WriteString("\n\n" + helpStyle.Render("enter search • esc discover"))
+		if m.loading {
+			query := strings.TrimSpace(m.search.Value())
+			if query == "" {
+				body.WriteString(m.spinner.View() + " Searching…")
+			} else {
+				body.WriteString(m.spinner.View() + " Searching for " + titleStyle.Render(query) + "…")
+			}
+		} else {
+			body.WriteString(m.search.View())
+			body.WriteString("\n\n" + helpStyle.Render("enter search • esc discover"))
+		}
 	case stageResults:
 		body.WriteString(m.mediaResultsView())
 		if m.resolvingEpisode != nil {
@@ -264,7 +273,7 @@ func (m Model) View() string {
 		} else {
 			body.WriteString(m.listView(items))
 		}
-		body.WriteString("\n" + helpStyle.Render("enter search with source • esc back to credentials • q quit"))
+		body.WriteString("\n" + helpStyle.Render("enter switch and search • esc back to credentials • q quit"))
 	case stageUpdatePrompt:
 		body.WriteString(titleStyle.Render("Update AnimiX") + "\n\n")
 		body.WriteString(m.updateProgressLabel() + "\n\n")

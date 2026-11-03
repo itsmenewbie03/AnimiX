@@ -2049,6 +2049,9 @@ func (m Model) activateTrackedManga(entry anilist.Entry) (tea.Model, tea.Cmd) {
 
 func (m Model) resumeManga(entry appconfig.MangaReadingEntry) (tea.Model, tea.Cmd) {
 	entry.CoverURL = m.presenceCover(entry.AniListMediaID, entry.CoverURL)
+	// Resuming local history is not a tracked-title resolution. Drop any stale
+	// resolution context before opening the saved chapter.
+	m.clearEpisodeResolution()
 	for _, source := range m.sources {
 		if source.ID != entry.SourceID {
 			continue
@@ -2144,6 +2147,10 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 
 func (m Model) resumePlayback(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) {
 	m.playbackReturnHome = true
+	// Resuming local history starts a new playback context. Drop any tracked
+	// title left over from a previous resolution so Cloudflare recovery does
+	// not search for the wrong series.
+	m.clearEpisodeResolution()
 	// Resume Watching does not pass through the details screen. Clear any
 	// previously viewed title so autoplay cannot use a stale episode catalog.
 	m.details = catalog.Media{}
@@ -3859,13 +3866,18 @@ func (m Model) switchCloudflareSource(source catalog.Source) (tea.Model, tea.Cmd
 	m.selectedEpisode = catalog.Episode{}
 	m.details = catalog.Media{}
 	m.selectedMedia = catalog.Media{}
-	m.loading, m.err, m.status = true, nil, ""
+	m.err, m.status = nil, ""
 	m.rememberActiveSource(source)
 	if m.resolvingEpisode != nil {
+		// Switching extensions restarts resolution from the first AniList title
+		// variant so the fallback matching still applies to the new source.
 		m.manualMapping = false
 		m.prepareResolutionSearches(*m.resolvingEpisode)
-		query = m.resolutionQuery
+		if m.resolutionQuery != "" {
+			query = m.resolutionQuery
+		}
 	}
+	query = strings.TrimSpace(query)
 	m.stage = stageSearch
 	m.search.SetValue(query)
 	m.search.Focus()
@@ -3873,11 +3885,45 @@ func (m Model) switchCloudflareSource(source catalog.Source) (tea.Model, tea.Cmd
 		m.loading = false
 		return m, textinput.Blink
 	}
+	// Start the search immediately instead of asking the user to submit the
+	// recovered query again.
+	m.loading = true
 	return m, tea.Batch(m.spinner.Tick, m.runSearch(query))
 }
 
 func (m Model) recoverySearchQuery() string {
-	return firstNonEmpty(m.details.DisplayTitle(), m.selectedMedia.DisplayTitle(), m.resolutionQuery, strings.TrimSpace(m.search.Value()))
+	if m.resolvingEpisode != nil {
+		if query := strings.TrimSpace(m.resolutionQuery); query != "" {
+			return query
+		}
+		if query := firstNonEmpty(
+			m.resolvingEpisode.Title,
+			m.resolvingEpisode.EnglishTitle,
+			m.resolvingEpisode.RomajiTitle,
+			m.resolvingEpisode.NativeTitle,
+		); query != "" {
+			return query
+		}
+	}
+	// Playback recovery clears the details screen and may not have an AniList
+	// resolution target, so prefer the saved playback title.
+	if m.pendingPlayback != nil {
+		if title := strings.TrimSpace(m.pendingPlayback.Title); title != "" {
+			return title
+		}
+	}
+	// A failed search must retry the query the user typed, not a title left
+	// over from an earlier details screen.
+	if m.cloudflareOperation == cloudflareSearch {
+		if query := strings.TrimSpace(m.search.Value()); query != "" {
+			return query
+		}
+	}
+	return firstNonEmpty(
+		m.details.DisplayTitle(),
+		m.selectedMedia.DisplayTitle(),
+		strings.TrimSpace(m.search.Value()),
+	)
 }
 
 func openURL(url string) tea.Cmd {

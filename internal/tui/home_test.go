@@ -2350,8 +2350,132 @@ func TestCloudflareRecoveryCanSwitchExtension(t *testing.T) {
 	if model.stage != stageSearch || model.search.Value() != "Cyberpunk: Edgerunners" {
 		t.Fatalf("switch did not restart search: stage=%d query=%q", model.stage, model.search.Value())
 	}
+	if !model.loading {
+		t.Fatal("switch did not start the recovered search")
+	}
 	if model.cloudflareOperation != cloudflareNone {
 		t.Fatal("source switch kept the stale Cloudflare operation")
+	}
+}
+
+func TestCloudflareRecoverySwitchUsesPlaybackTitle(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading, model.cloudflareReturn = stageCloudflareUserAgent, false, stageStreams
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+	model.pendingPlayback = &appconfig.ContinueEntry{
+		Title: "Saved Playback Title", EpisodeNumber: "5",
+	}
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	model.cursor = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if command == nil || !model.loading {
+		t.Fatalf("switch did not search with the playback title: command=%v loading=%t", command, model.loading)
+	}
+	if model.stage != stageSearch || model.search.Value() != "Saved Playback Title" {
+		t.Fatalf("playback query not recovered: stage=%d query=%q", model.stage, model.search.Value())
+	}
+}
+
+func TestCloudflareSearchRecoveryPrefersTypedQuery(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading = stageCloudflareCookie, false
+	model.cloudflareOperation = cloudflareSearch
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+	// Leave an old details screen around to make sure the typed query wins.
+	model.details = catalog.Media{Title: "Previous Show"}
+	model.selectedMedia = catalog.Media{Title: "Previous Result"}
+	model.search.SetValue("Typed Query")
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	model.cursor = 1
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if model.stage != stageSearch || model.search.Value() != "Typed Query" {
+		t.Fatalf("search recovery used the wrong query: stage=%d query=%q", model.stage, model.search.Value())
+	}
+}
+
+func TestCloudflareRecoverySwitchRestartsResolutionFallback(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.stage, model.loading = stageCloudflareCookie, false
+	model.selectedSource = catalog.Source{ID: "anikoto", Name: "Anikoto", Type: "anime"}
+	model.sources = []catalog.Source{
+		{ID: "anikoto", Name: "Anikoto", Type: "anime"},
+		{ID: "animepahe", Name: "AnimePahe", Type: "anime"},
+	}
+	entry := anilist.Entry{
+		MediaID: 42, Type: "ANIME", Title: "Preferred Title",
+		EnglishTitle: "Localized Title", RomajiTitle: "Romaji Title",
+	}
+	model.resolvingEpisode = &entry
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	model = updated.(Model)
+	model.cursor = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+
+	if command == nil || model.selectedSource.ID != "animepahe" || !model.loading {
+		t.Fatalf("switch = source %q loading=%t command=%v", model.selectedSource.ID, model.loading, command)
+	}
+	if model.resolutionQuery != "Preferred Title" || len(model.resolutionSearches) < 2 {
+		t.Fatalf("resolution fallback was not prepared: query=%q searches=%#v", model.resolutionQuery, model.resolutionSearches)
+	}
+	if model.search.Value() != "Preferred Title" {
+		t.Fatalf("search input = %q, want the first resolution title", model.search.Value())
+	}
+
+	updated, command = model.update(searchMsg{pages: catalog.Pages{}})
+	model = updated.(Model)
+	if command == nil || model.resolutionQuery != "Localized Title" {
+		t.Fatalf("resolver did not advance to the next title: query=%q command=%v", model.resolutionQuery, command)
+	}
+
+	updated, command = model.update(searchMsg{pages: catalog.Pages{List: []catalog.Media{{Title: "Localized Title", URL: "/match"}}}})
+	model = updated.(Model)
+	if command == nil || model.selectedMedia.URL != "/match" || !model.loading {
+		t.Fatalf("resolver did not accept the fallback title: media=%#v loading=%t command=%v", model.selectedMedia, model.loading, command)
+	}
+}
+
+func TestSearchViewShowsProgressWhileSearching(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+	model.width, model.height = 100, 30
+	model.stage = stageSearch
+	model.selectedSource = catalog.Source{Name: "Anikoto"}
+	model.search.SetValue("One Piece")
+
+	model.loading = true
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Searching for One Piece") {
+		t.Fatalf("searching view has no progress line:\n%s", view)
+	}
+	if strings.Contains(view, "enter search") {
+		t.Fatalf("searching view still asks for Enter:\n%s", view)
+	}
+
+	model.loading = false
+	view = ansi.Strip(model.View())
+	if !strings.Contains(view, "enter search") {
+		t.Fatalf("idle search view lost its submit hint:\n%s", view)
 	}
 }
 

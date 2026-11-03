@@ -2596,3 +2596,125 @@ func TestSkipTimesBecomeMpvChapterMarkers(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveSelectedResumeEntry(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	keep := appconfig.ContinueEntry{
+		Title: "Keep", SourceID: "source", MediaURL: "keep",
+		EpisodeNumber: "1", EpisodeName: "Episode 1", Position: 100, Duration: 1000,
+	}
+	remove := appconfig.ContinueEntry{
+		Title: "Remove", SourceID: "source", MediaURL: "remove",
+		EpisodeNumber: "2", EpisodeName: "Episode 2", Position: 200, Duration: 1000,
+	}
+	for _, entry := range []appconfig.ContinueEntry{keep, remove} {
+		if err := store.SaveContinue(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.stage = stageSources
+	model.homeType = "anime"
+	model.homeFocus = homeFocusResumeWatching
+	model.continueWatching = []appconfig.ContinueEntry{keep, remove}
+	model.refreshResumeWatching()
+	model.resumeWatchingList.Select(1)
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model = updated.(Model)
+
+	if len(model.resumeWatchingList.Items()) != 1 {
+		t.Fatalf("Resume items after remove = %#v", model.resumeWatchingList.Items())
+	}
+	if item := model.resumeWatchingList.Items()[0].(resumeWatchingListItem); item.entry.Title != "Keep" {
+		t.Fatalf("removed the wrong Resume entry: %#v", item.entry)
+	}
+	if model.statusTitle != "Removed from Resume" || !strings.Contains(model.status, "Remove") {
+		t.Fatalf("remove feedback = title %q status %q", model.statusTitle, model.status)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].Title != "Keep" {
+		t.Fatalf("persisted ContinueWatching = %#v", loaded.ContinueWatching)
+	}
+}
+
+func TestRemoveSelectedMangaResumeEntry(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	keep := appconfig.MangaReadingEntry{Title: "Keep", SourceID: "source", MediaURL: "keep", Page: 3, TotalPages: 20}
+	remove := appconfig.MangaReadingEntry{Title: "Remove", SourceID: "source", MediaURL: "remove", Page: 4, TotalPages: 20}
+	for _, entry := range []appconfig.MangaReadingEntry{keep, remove} {
+		if err := store.SaveMangaReading(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.stage = stageSources
+	model.homeType = "manga"
+	model.mangaFeed = mangaFeedResume
+	model.mangaReading = []appconfig.MangaReadingEntry{keep, remove}
+	model.refreshMangaHome()
+	model.mangaResumeList.Select(1)
+
+	updated, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	model = updated.(Model)
+
+	if len(model.mangaResumeList.Items()) != 1 {
+		t.Fatalf("manga Resume items after remove = %#v", model.mangaResumeList.Items())
+	}
+	if item := model.mangaResumeList.Items()[0].(mangaResumeListItem); item.entry.Title != "Keep" {
+		t.Fatalf("removed the wrong manga Resume entry: %#v", item.entry)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MangaReading) != 1 || loaded.MangaReading[0].Title != "Keep" {
+		t.Fatalf("persisted MangaReading = %#v", loaded.MangaReading)
+	}
+}
+
+func TestF5RefreshesHomeFromStore(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	entry := appconfig.ContinueEntry{
+		Title: "Refreshed", SourceID: "source", MediaURL: "media",
+		EpisodeNumber: "3", Position: 120, Duration: 1000,
+	}
+	if err := store.SaveContinue(entry); err != nil {
+		t.Fatal(err)
+	}
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.stage = stageSources
+	model.homeType = "anime"
+	model.homeFocus = homeFocusResumeWatching
+	if len(model.resumeWatchingList.Items()) != 0 {
+		t.Fatal("test Home unexpectedly started with Resume items")
+	}
+
+	updated, command := model.handleKey(tea.KeyMsg{Type: tea.KeyF5})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("F5 did not request a Home refresh")
+	}
+	message, ok := command().(repositoriesMsg)
+	if !ok {
+		t.Fatalf("F5 refresh returned %T", message)
+	}
+	updated, _ = model.Update(message)
+	model = updated.(Model)
+
+	if len(model.resumeWatchingList.Items()) != 1 {
+		t.Fatalf("Resume after F5 = %#v", model.resumeWatchingList.Items())
+	}
+	if item := model.resumeWatchingList.Items()[0].(resumeWatchingListItem); item.entry.Title != "Refreshed" {
+		t.Fatalf("refreshed Resume entry = %#v", item.entry)
+	}
+}

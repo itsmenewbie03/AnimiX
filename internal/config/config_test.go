@@ -393,6 +393,53 @@ func TestSaveContinueKeepsNewestTenAndReplacesMedia(t *testing.T) {
 	}
 }
 
+func TestRemoveContinueDeletesMatchingMediaOnly(t *testing.T) {
+	t.Parallel()
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	keep := ContinueEntry{SourceID: "source", MediaURL: "keep", Title: "Keep"}
+	remove := ContinueEntry{SourceID: "source", MediaURL: "remove", Title: "Remove"}
+	for _, entry := range []ContinueEntry{keep, remove} {
+		if err := store.SaveContinue(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RemoveContinue(remove); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ContinueWatching) != 1 || loaded.ContinueWatching[0].MediaURL != "keep" {
+		t.Fatalf("ContinueWatching after remove = %#v", loaded.ContinueWatching)
+	}
+	if err := store.RemoveContinue(remove); err != nil {
+		t.Fatalf("removing a missing entry should be a no-op: %v", err)
+	}
+}
+
+func TestRemoveMangaReadingDeletesMatchingMediaOnly(t *testing.T) {
+	t.Parallel()
+	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	keep := MangaReadingEntry{SourceID: "source", MediaURL: "keep", Title: "Keep"}
+	remove := MangaReadingEntry{SourceID: "source", MediaURL: "remove", Title: "Remove"}
+	for _, entry := range []MangaReadingEntry{keep, remove} {
+		if err := store.SaveMangaReading(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RemoveMangaReading(remove); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.MangaReading) != 1 || loaded.MangaReading[0].MediaURL != "keep" {
+		t.Fatalf("MangaReading after remove = %#v", loaded.MangaReading)
+	}
+}
+
 func TestSaveContinuePersistsAniListLink(t *testing.T) {
 	t.Parallel()
 	store := NewStore(filepath.Join(t.TempDir(), "config.toml"))

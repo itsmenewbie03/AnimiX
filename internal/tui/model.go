@@ -1732,6 +1732,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.stage, m.cursor, m.err = stageRepositories, 0, nil
 			return m, nil
 		}
+	case "f5":
+		if m.stage == stageSources {
+			return m, m.loadRepositories()
+		}
 	case "t":
 		if m.stage == stageSources {
 			m.err, m.status = nil, ""
@@ -1745,6 +1749,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.loadAniListLibrary(m.anilistToken, true, false))
 		}
 	case "x":
+		if m.stage == stageSources {
+			return m.removeResumeEntry()
+		}
 		if m.stage == stageAniListLibrary {
 			m.loading, m.err = true, nil
 			return m, tea.Batch(m.spinner.Tick, m.logoutAniList())
@@ -3191,6 +3198,63 @@ func mangaFeedLabel(feed mangaFeed) string {
 		return "All"
 	}
 	return mangaStatusLabel(string(feed))
+}
+
+// removeResumeEntry deletes the selected local resume record. Resume is the
+// only Home feed that can be edited: New Episodes and Watching mirror AniList.
+func (m Model) removeResumeEntry() (tea.Model, tea.Cmd) {
+	if m.homeType == "manga" {
+		if m.mangaFeed != mangaFeedResume {
+			return m, nil
+		}
+		selected, ok := m.mangaResumeList.SelectedItem().(mangaResumeListItem)
+		if !ok {
+			return m, nil
+		}
+		if m.configStore != nil {
+			if err := m.configStore.RemoveMangaReading(selected.entry); err != nil {
+				m.err = fmt.Errorf("remove manga from Resume: %w", err)
+				return m, nil
+			}
+		}
+		filtered := make([]appconfig.MangaReadingEntry, 0, len(m.mangaReading))
+		for _, entry := range m.mangaReading {
+			if entry.SourceID == selected.entry.SourceID && entry.MediaURL == selected.entry.MediaURL {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		m.mangaReading = filtered
+		m.refreshMangaHome()
+		m.statusTitle = "Removed from Resume"
+		m.status = selected.entry.Title
+		return m, nil
+	}
+	if m.homeType != "anime" || m.homeFocus != homeFocusResumeWatching {
+		return m, nil
+	}
+	selected, ok := m.resumeWatchingList.SelectedItem().(resumeWatchingListItem)
+	if !ok {
+		return m, nil
+	}
+	if m.configStore != nil {
+		if err := m.configStore.RemoveContinue(selected.entry); err != nil {
+			m.err = fmt.Errorf("remove from Resume: %w", err)
+			return m, nil
+		}
+	}
+	filtered := make([]appconfig.ContinueEntry, 0, len(m.continueWatching))
+	for _, entry := range m.continueWatching {
+		if entry.SourceID == selected.entry.SourceID && entry.MediaURL == selected.entry.MediaURL {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	m.continueWatching = filtered
+	m.refreshResumeWatching()
+	m.statusTitle = "Removed from Resume"
+	m.status = selected.entry.Title + " — " + continueEpisodeLabel(selected.entry.EpisodeNumber, selected.entry.EpisodeName)
+	return m, nil
 }
 
 func (m *Model) refreshResumeWatching() {

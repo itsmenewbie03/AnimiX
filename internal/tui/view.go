@@ -385,7 +385,7 @@ func (m Model) sourcesView() string {
 		}
 	}
 
-	output.WriteString("\n" + homeHelp(m.currentLength() > 0))
+	output.WriteString("\n" + m.homeHelp())
 	return output.String()
 }
 
@@ -429,12 +429,23 @@ func homeFeedEmptyMessage(feed homeFocus) string {
 	}
 }
 
-func homeHelp(hasItems bool) string {
-	controls := "d discover • r repositories • t AniList • p Discord • ? help • q quit"
+func (m Model) homeHelp() string {
+	hasItems := m.currentLength() > 0
+	controls := "d discover • r repositories • t AniList • p Discord • f5 refresh • ? help • q quit"
 	if hasItems {
 		controls = "j/k move • gg/G first/last • enter open • / filter • " + controls
 	}
+	if hasItems && m.canRemoveResumeEntry() {
+		controls = "x remove • " + controls
+	}
 	return helpStyle.Render(controls)
+}
+
+func (m Model) canRemoveResumeEntry() bool {
+	if m.homeType == "manga" {
+		return m.mangaFeed == mangaFeedResume && len(m.mangaResumeList.Items()) > 0
+	}
+	return m.homeType == "anime" && m.homeFocus == homeFocusResumeWatching && len(m.resumeWatchingList.Items()) > 0
 }
 
 func continueEpisodeLabel(number, name string) string {

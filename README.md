@@ -88,8 +88,9 @@ CI runs tests, `go vet`, and a build on every push and pull request. Pushing a
 ```
 
 Use the arrow keys or `j`/`k` to move, `gg`/`G` to jump to the first/last item,
-`Enter` to select, `Esc` to go back, and `q` to quit. Press `?` anywhere outside
-a text field for the complete categorized shortcut reference.
+`Enter` to select, `Esc` to go back, and `q` to quit. `Ctrl+Q` is also available
+as a global quit shortcut. Press `?` anywhere outside a text field for the
+complete categorized shortcut reference.
 
 | Key                                    | What it does                                         |
 | -------------------------------------- | ---------------------------------------------------- |
@@ -97,6 +98,8 @@ a text field for the complete categorized shortcut reference.
 | `h` / `l`, `Tab`, `←` / `→`            | Switch Home feeds                                    |
 | `Tab` / `Shift+Tab`, `h` / `l`, `←` / `→` | Switch scanlator in the Manga chapter list          |
 | `/` / `c`                              | Filter the active Home feed / clear its filter       |
+| `x`                                    | Remove the selected Resume entry / sign out of AniList |
+| `F5`                                   | Refresh Home from saved config and AniList           |
 | `d`                                    | Open Discover and search with an installed source    |
 | `t`                                    | Connect or manage AniList tracking                   |
 | `p`                                    | Manage Discord presence from Home                   |
@@ -104,15 +107,16 @@ a text field for the complete categorized shortcut reference.
 | `space`                                | Toggle **Remember server** on the stream screen      |
 | `a` / `s`                              | Search an alternative title / change source          |
 | `Ctrl+O`                               | Reopen reader / open source or AniList authorization |
-| `Ctrl+E`                               | Switch extension from Cloudflare recovery            |
+| `Ctrl+E`                               | Switch extension and retry the search from Cloudflare recovery |
 | `c`                                    | Start Cloudflare recovery manually                   |
-| `x`                                    | Sign out of AniList from the library screen          |
 
 ## 🏠 Home, Episodes & History
 
 The Anime Home uses full-height tabs for **Resume**, **New Episodes**, and
 **Watching**. Resume keeps incomplete local playback ordered by recent activity.
-New Episodes mirrors AnymeX's release rules and sorts recent unwatched releases
+Press `x` on Resume to delete the selected local history record, or `F5` to
+reload saved config and AniList state. New Episodes mirrors AnymeX's release
+rules and sorts recent unwatched releases
 by release date. Watching preserves AniList's recently-updated order for entries
 with `CURRENT` status. A title may intentionally appear in both New Episodes and
 Watching, matching AnymeX. Finished shows drop off New Episodes after seven

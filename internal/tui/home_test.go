@@ -34,6 +34,18 @@ type fakeMangaReader struct {
 	closed  string
 }
 
+type fakeAniSkipClient struct {
+	times         aniskip.Times
+	malID         int
+	episode       float64
+	episodeLength int
+}
+
+func (client *fakeAniSkipClient) Times(_ context.Context, malID int, episode float64, episodeLength int) (aniskip.Times, error) {
+	client.malID, client.episode, client.episodeLength = malID, episode, episodeLength
+	return client.times, nil
+}
+
 func (reader *fakeMangaReader) Open(session mangareader.Session) (mangareader.OpenedSession, error) {
 	reader.session = session
 	return mangareader.OpenedSession{ID: "reader-session", URL: "http://127.0.0.1/reader-session"}, nil
@@ -1760,6 +1772,35 @@ func TestResumePlaybackRefreshesExpiredLocalProxyURL(t *testing.T) {
 	}
 	if model.status != "" {
 		t.Fatalf("status = %q, want no layout-shifting status", model.status)
+	}
+}
+
+func TestResumeUsesSavedMALIDForAniSkipBeforeLibraryLoads(t *testing.T) {
+	t.Parallel()
+	client := &fakeAniSkipClient{times: aniskip.Times{
+		Op: &aniskip.Interval{Start: 24, End: 113},
+	}}
+	model := New(nil, nil, "", "mpv")
+	model.aniskipClient = client
+	model.sources = []catalog.Source{{ID: "source", Name: "Anikoto", Type: "anime"}}
+	entry := appconfig.ContinueEntry{
+		Title: "Series", SourceID: "source", SourceName: "Anikoto", MediaURL: "media",
+		EpisodeURL: "episode-5", EpisodeName: "Episode 5", EpisodeNumber: "5",
+		Position: 300, Duration: 1420, MALID: 64084,
+	}
+
+	updated, _ := model.resumePlayback(entry)
+	model = updated.(Model)
+	if model.resolvingEpisode != nil {
+		t.Fatalf("test requires AniList library to still be loading: %#v", model.resolvingEpisode)
+	}
+	chapters := model.skipChapters(entry.Duration)
+
+	if len(chapters) != 2 || chapters[0].Title != "Intro" || chapters[0].Start != 24 || chapters[1].Title != "Intro end" {
+		t.Fatalf("resume chapters = %#v", chapters)
+	}
+	if client.malID != entry.MALID || client.episode != 5 || client.episodeLength != 1420 {
+		t.Fatalf("AniSkip request = MAL %d episode %.1f length %d", client.malID, client.episode, client.episodeLength)
 	}
 }
 

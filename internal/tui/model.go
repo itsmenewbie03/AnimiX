@@ -106,7 +106,7 @@ type Model struct {
 	repositoryClient      *repository.Client
 	installer             *repository.Installer
 	anilistClient         *anilist.Client
-	aniskipClient         *aniskip.Client
+	aniskipClient         aniSkipClient
 	extensionDirectory    string
 	extensionTimeout      time.Duration
 	player                string
@@ -210,6 +210,10 @@ type Model struct {
 type UpdateService interface {
 	Check(context.Context, string) (appupdate.Release, error)
 	InstallWithProgress(context.Context, appupdate.Release, func(appupdate.ProbeProgress)) error
+}
+
+type aniSkipClient interface {
+	Times(context.Context, int, float64, int) (aniskip.Times, error)
 }
 
 type resolutionSearch struct {
@@ -2276,7 +2280,9 @@ func (m Model) startPlayer(video catalog.Video, entry appconfig.ContinueEntry) (
 // skipChapters mirrors AnymeX's AniSkip lookup and turns the provider-agnostic
 // skip ranges into mpv chapter markers.
 func (m Model) skipChapters(episodeLength float64) []player.Chapter {
-	if m.aniskipClient == nil || m.resolvingEpisode == nil || m.malID == 0 {
+	// Resume Watching can start before the background AniList library loads.
+	// Its saved MAL ID is sufficient for AniSkip without resolvingEpisode.
+	if m.aniskipClient == nil || m.malID == 0 {
 		return nil
 	}
 	number, err := strconv.ParseFloat(normalizedEpisodeNumber(m.selectedEpisode.Number()), 64)

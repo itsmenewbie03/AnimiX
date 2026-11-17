@@ -69,6 +69,20 @@ also times out, the request is reported as a retryable failure. Timeouts are not
 treated as Cloudflare challenges, so increasing the timeout never opens the
 recovery prompt by itself.
 
+### Preferred subtitles
+
+`preferred_subtitle` selects a matching extension-provided subtitle track when
+one is available. Matching ignores case and punctuation but keeps regular,
+SDH, and forced English tracks distinct. Omit the setting to retain the
+provider's default order:
+
+```toml
+preferred_subtitle = "English"
+```
+
+Other common values are `"English SDH"` and `"Forced English"`. If no track
+label matches, playback falls back to the provider's original subtitle order.
+
 ## 🔨 Building
 
 The build produces a single `animix` binary:

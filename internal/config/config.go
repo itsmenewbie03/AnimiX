@@ -32,6 +32,7 @@ type Config struct {
 	AutoPlayNextEpisode   *bool                 `json:"autoPlayNextEpisode,omitempty" toml:"auto_play_next_episode,omitempty"`
 	SyncResumeWithAniList ResumeAniListSyncMode `json:"syncResumeWithAniList,omitempty" toml:"sync_resume_with_anilist,omitempty"`
 	ExtensionTimeout      *int                  `json:"extensionTimeout,omitempty" toml:"extension_timeout,omitempty"`
+	PreferredSubtitle     string                `json:"preferredSubtitle,omitempty" toml:"preferred_subtitle,omitempty"`
 }
 
 const (
@@ -402,6 +403,7 @@ type settings struct {
 	AutoPlayNextEpisode   *bool                 `toml:"auto_play_next_episode,omitempty"`
 	SyncResumeWithAniList ResumeAniListSyncMode `toml:"sync_resume_with_anilist,omitempty"`
 	ExtensionTimeout      *int                  `toml:"extension_timeout,omitempty"`
+	PreferredSubtitle     string                `toml:"preferred_subtitle,omitempty"`
 }
 
 type state struct {
@@ -430,6 +432,7 @@ func (s *Store) Load() (Config, error) {
 		result.AutoPlayNextEpisode = values.AutoPlayNextEpisode
 		result.SyncResumeWithAniList = values.SyncResumeWithAniList
 		result.ExtensionTimeout = values.ExtensionTimeout
+		result.PreferredSubtitle = values.PreferredSubtitle
 		result.Discord = values.Discord
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
@@ -466,6 +469,7 @@ func (s *Store) writeSettings(config Config) error {
 		Discord:      config.Discord,
 		CheckUpdates: config.CheckUpdates, AutoPlayNextEpisode: config.AutoPlayNextEpisode,
 		SyncResumeWithAniList: config.SyncResumeWithAniList, ExtensionTimeout: config.ExtensionTimeout,
+		PreferredSubtitle: config.PreferredSubtitle,
 	})
 	closeErr := file.Close()
 	if encodeErr != nil {

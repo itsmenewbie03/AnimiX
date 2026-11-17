@@ -2180,6 +2180,29 @@ func TestPlaybackMediaTitle(t *testing.T) {
 	}
 }
 
+func TestPreferredSubtitleMovesMatchingTrackFirst(t *testing.T) {
+	t.Parallel()
+	tracks := []catalog.Track{
+		{File: "forced.vtt", Label: "Forced English"},
+		{File: "english.vtt", Label: "English"},
+		{File: "sdh.vtt", Label: "English SDH"},
+	}
+	for _, test := range []struct {
+		preferred string
+		want      string
+	}{
+		{preferred: "English", want: "english.vtt"},
+		{preferred: "English SDH", want: "sdh.vtt"},
+		{preferred: "Forced English", want: "forced.vtt"},
+		{preferred: "German", want: "forced.vtt"},
+	} {
+		got := preferredSubtitleTracks(tracks, test.preferred)
+		if got[0].File != test.want {
+			t.Errorf("preferred %q selected %q, want %q", test.preferred, got[0].File, test.want)
+		}
+	}
+}
+
 func TestResumeMetadataEnrichesPlaybackTitleBeforeLoadingVideos(t *testing.T) {
 	t.Parallel()
 	model := New(nil, nil, "", "mpv")
@@ -2855,6 +2878,17 @@ func TestRepositoriesMessageAppliesExtensionTimeout(t *testing.T) {
 	model = updated.(Model)
 	if got := model.requestTimeout(); got != 25*time.Second {
 		t.Fatalf("empty config reset timeout to %s", got)
+	}
+}
+
+func TestRepositoriesMessageAppliesPreferredSubtitle(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+
+	updated, _ := model.update(repositoriesMsg{preferredSubtitle: "English SDH"})
+	model = updated.(Model)
+	if model.preferredSubtitle != "English SDH" {
+		t.Fatalf("preferred subtitle after load = %q", model.preferredSubtitle)
 	}
 }
 

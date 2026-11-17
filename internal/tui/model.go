@@ -2139,13 +2139,6 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 	if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
 		entry.Position = 0
 	}
-	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := m.configStore.SaveContinue(entry); err != nil {
-		m.err = fmt.Errorf("save Continue Watching: %w", err)
-		return m, nil
-	}
-	m.continueWatching = prependContinue(m.continueWatching, entry)
-	m.refreshResumeWatching()
 	return m.resumePlayback(entry)
 }
 

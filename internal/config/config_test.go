@@ -279,6 +279,29 @@ func TestExtensionTimeoutPersistsInTOML(t *testing.T) {
 	}
 }
 
+func TestPreferredSubtitlePersistsInTOML(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	store := NewStore(path)
+	if err := store.Save(Config{PreferredSubtitle: "English SDH"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `preferred_subtitle = "English SDH"`) {
+		t.Fatalf("config.toml missing preferred subtitle: %s", data)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PreferredSubtitle != "English SDH" {
+		t.Fatalf("loaded preferred subtitle = %q", loaded.PreferredSubtitle)
+	}
+}
+
 func TestEnsureCreatesEditableTOML(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")

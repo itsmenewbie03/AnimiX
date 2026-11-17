@@ -109,6 +109,7 @@ type Model struct {
 	aniskipClient         aniSkipClient
 	extensionDirectory    string
 	extensionTimeout      time.Duration
+	preferredSubtitle     string
 	player                string
 	mangaReader           MangaReader
 	stage                 stage
@@ -419,6 +420,7 @@ type repositoriesMsg struct {
 	sourceCredentials []appconfig.SourceCredential
 	streamPreferences []appconfig.StreamPreference
 	extensionTimeout  time.Duration
+	preferredSubtitle string
 	err               error
 }
 
@@ -1084,6 +1086,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.extensionTimeout > 0 {
 				m.extensionTimeout = msg.extensionTimeout
 			}
+			m.preferredSubtitle = msg.preferredSubtitle
 			commands := []tea.Cmd{m.loadSourceCredentials(msg.sourceCredentials)}
 			if msg.token != "" {
 				commands = append(commands, m.loadAniListLibrary(msg.token, false, true))
@@ -2139,13 +2142,6 @@ func (m Model) playContinue(entry appconfig.ContinueEntry) (tea.Model, tea.Cmd) 
 	if entry.Duration > 0 && entry.Position/entry.Duration >= watchedThreshold {
 		entry.Position = 0
 	}
-	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := m.configStore.SaveContinue(entry); err != nil {
-		m.err = fmt.Errorf("save Continue Watching: %w", err)
-		return m, nil
-	}
-	m.continueWatching = prependContinue(m.continueWatching, entry)
-	m.refreshResumeWatching()
 	return m.resumePlayback(entry)
 }
 
@@ -2263,6 +2259,7 @@ func (m Model) startPlayer(video catalog.Video, entry appconfig.ContinueEntry) (
 		seriesTitle = firstNonEmpty(m.resolvingEpisode.Title, seriesTitle)
 	}
 	video.Title = playbackMediaTitle(seriesTitle, m.selectedEpisode)
+	video.Subtitles = preferredSubtitleTracks(video.Subtitles, m.preferredSubtitle)
 	execution := &observedPlayback{
 		ctx: m.appContext, executable: m.player, video: video, entry: entry,
 		chapters: m.skipChapters(entry.Duration), presence: m.discord,
@@ -2275,6 +2272,34 @@ func (m Model) startPlayer(video catalog.Video, entry appconfig.ContinueEntry) (
 	return m, tea.Exec(execution, func(runErr error) tea.Msg {
 		return playerFinishedMsg{err: runErr, progress: execution.progress, entry: &entry}
 	})
+}
+
+func preferredSubtitleTracks(tracks []catalog.Track, preferred string) []catalog.Track {
+	preferred = normalizeSubtitleLabel(preferred)
+	if preferred == "" || len(tracks) < 2 {
+		return tracks
+	}
+	match := -1
+	for index, track := range tracks {
+		if normalizeSubtitleLabel(track.Label) == preferred {
+			match = index
+			break
+		}
+	}
+	if match <= 0 {
+		return tracks
+	}
+	result := append([]catalog.Track(nil), tracks...)
+	selected := result[match]
+	copy(result[1:match+1], result[:match])
+	result[0] = selected
+	return result
+}
+
+func normalizeSubtitleLabel(value string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}), " ")
 }
 
 // skipChapters mirrors AnymeX's AniSkip lookup and turns the provider-agnostic
@@ -3589,7 +3614,8 @@ func (m Model) loadRepositories() tea.Cmd {
 			activeSources: config.ActiveSources,
 			mediaMappings: config.MediaMappings, sourceCredentials: config.SourceCredentials,
 			streamPreferences: config.StreamPreferences, extensionTimeout: config.ExtensionRequestTimeout(),
-			err: err,
+			preferredSubtitle: config.PreferredSubtitle,
+			err:               err,
 		}
 	}
 }

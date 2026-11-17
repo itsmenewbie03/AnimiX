@@ -1775,6 +1775,50 @@ func TestResumePlaybackRefreshesExpiredLocalProxyURL(t *testing.T) {
 	}
 }
 
+func TestSecondResumeEntryMovesOnlyAfterPlayback(t *testing.T) {
+	t.Parallel()
+	store := appconfig.NewStore(filepath.Join(t.TempDir(), "config.toml"))
+	model := New(nil, store, "", "mpv")
+	model.loading = false
+	model.homeFocus = homeFocusResumeWatching
+	model.sources = []catalog.Source{{ID: "source", Name: "Anikoto", Type: "anime"}}
+	model.continueWatching = []appconfig.ContinueEntry{
+		{Title: "First", SourceID: "source", MediaURL: "first", Position: 10, Duration: 100, UpdatedAt: 2},
+		{Title: "Second", SourceID: "source", MediaURL: "second", Position: 10, Duration: 100, UpdatedAt: 1},
+	}
+	model.refreshResumeWatching()
+	model.resumeWatchingList.Select(1)
+
+	updated, command := model.activate()
+	model = updated.(Model)
+
+	if command == nil {
+		t.Fatal("resume did not schedule stream resolution")
+	}
+	selected, ok := model.resumeWatchingList.SelectedItem().(resumeWatchingListItem)
+	if !ok || selected.entry.Title != "Second" {
+		t.Fatalf("selected Resume item = %#v, want Second item", selected)
+	}
+	if model.resumeWatchingList.Index() != 1 {
+		t.Fatalf("Resume cursor = %d, want loading item to remain at 1", model.resumeWatchingList.Index())
+	}
+	first := model.resumeWatchingList.Items()[0].(resumeWatchingListItem)
+	if first.entry.Title != "First" {
+		t.Fatalf("Resume order changed while loading: first item = %q", first.entry.Title)
+	}
+
+	playback := selected.entry
+	updated, _ = model.Update(playerFinishedMsg{
+		entry:    &playback,
+		progress: &player.Progress{Position: 20, Duration: 100, Reason: "quit"},
+	})
+	model = updated.(Model)
+	first = model.resumeWatchingList.Items()[0].(resumeWatchingListItem)
+	if first.entry.Title != "Second" {
+		t.Fatalf("finished Resume item was not promoted: first item = %q", first.entry.Title)
+	}
+}
+
 func TestResumeUsesSavedMALIDForAniSkipBeforeLibraryLoads(t *testing.T) {
 	t.Parallel()
 	client := &fakeAniSkipClient{times: aniskip.Times{
@@ -2133,6 +2177,29 @@ func TestPlaybackMediaTitle(t *testing.T) {
 				t.Fatalf("playbackMediaTitle() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPreferredSubtitleMovesMatchingTrackFirst(t *testing.T) {
+	t.Parallel()
+	tracks := []catalog.Track{
+		{File: "forced.vtt", Label: "Forced English"},
+		{File: "english.vtt", Label: "English"},
+		{File: "sdh.vtt", Label: "English SDH"},
+	}
+	for _, test := range []struct {
+		preferred string
+		want      string
+	}{
+		{preferred: "English", want: "english.vtt"},
+		{preferred: "English SDH", want: "sdh.vtt"},
+		{preferred: "Forced English", want: "forced.vtt"},
+		{preferred: "German", want: "forced.vtt"},
+	} {
+		got := preferredSubtitleTracks(tracks, test.preferred)
+		if got[0].File != test.want {
+			t.Errorf("preferred %q selected %q, want %q", test.preferred, got[0].File, test.want)
+		}
 	}
 }
 
@@ -2811,6 +2878,17 @@ func TestRepositoriesMessageAppliesExtensionTimeout(t *testing.T) {
 	model = updated.(Model)
 	if got := model.requestTimeout(); got != 25*time.Second {
 		t.Fatalf("empty config reset timeout to %s", got)
+	}
+}
+
+func TestRepositoriesMessageAppliesPreferredSubtitle(t *testing.T) {
+	t.Parallel()
+	model := New(nil, nil, "", "mpv")
+
+	updated, _ := model.update(repositoriesMsg{preferredSubtitle: "English SDH"})
+	model = updated.(Model)
+	if model.preferredSubtitle != "English SDH" {
+		t.Fatalf("preferred subtitle after load = %q", model.preferredSubtitle)
 	}
 }
 

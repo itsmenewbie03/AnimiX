@@ -74,6 +74,11 @@ func MPV(executable string, video catalog.Video) *exec.Cmd {
 			args = append(args, "--sub-file="+subtitle.File)
 		}
 	}
+	for _, audio := range video.Audios {
+		if audio.File != "" {
+			args = append(args, "--audio-file="+audio.File)
+		}
+	}
 	args = append(args, video.URL)
 	return exec.Command(executable, args...)
 }

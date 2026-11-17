@@ -19,6 +19,7 @@ func TestMPVArguments(t *testing.T) {
 			"Referer":    "https://example.com/",
 		},
 		Subtitles: []catalog.Track{{File: "https://cdn.example/sub.vtt"}},
+		Audios:    []catalog.Track{{File: "https://cdn.example/audio.m3u8", Label: "English"}},
 	})
 	want := []string{
 		"mpv",
@@ -34,6 +35,7 @@ func TestMPVArguments(t *testing.T) {
 		"--demuxer-lavf-o=http_persistent=0,http_multiple=0,seg_max_retry=5,reconnect=1,reconnect_streamed=1,reconnect_delay_max=5",
 		"--http-header-fields=Referer: https://example.com/,User-Agent: AnymeX",
 		"--sub-file=https://cdn.example/sub.vtt",
+		"--audio-file=https://cdn.example/audio.m3u8",
 		"https://cdn.example/video.m3u8",
 	}
 	if !reflect.DeepEqual(command.Args, want) {

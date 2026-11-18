@@ -14,17 +14,18 @@ import (
 )
 
 type Extension struct {
-	Name      string
-	Package   string
-	APK       string
-	APKURL    string
-	IconURL   string
-	Language  string
-	Version   string
-	NSFW      bool
-	Type      string
-	SourceIDs []string
-	RepoURL   string
+	Name        string
+	Package     string
+	APK         string
+	APKURL      string
+	IconURL     string
+	Language    string
+	Version     string
+	VersionCode uint64
+	NSFW        bool
+	Type        string
+	SourceIDs   []string
+	RepoURL     string
 }
 
 type Client struct {
@@ -107,17 +108,18 @@ func Parse(data []byte, repoURL, itemType string) ([]Extension, error) {
 		}
 		name := strings.TrimPrefix(strings.TrimPrefix(item.Name, "Aniyomi: "), "Tachiyomi: ")
 		result = append(result, Extension{
-			Name:      name,
-			Package:   item.Package,
-			APK:       firstNonEmpty(item.APK, path.Base(item.APKURL)),
-			APKURL:    resolveAssetURL(repoURL, firstNonEmpty(item.APKURL, item.APK), "apk"),
-			IconURL:   resolveAssetURL(repoURL, item.IconURL, "icon"),
-			Language:  firstNonEmpty(language, "en"),
-			Version:   item.Version,
-			NSFW:      item.NSFW || item.NSFWLevel > 0,
-			Type:      typeName,
-			SourceIDs: ids,
-			RepoURL:   repoURL,
+			Name:        name,
+			Package:     item.Package,
+			APK:         firstNonEmpty(item.APK, path.Base(item.APKURL)),
+			APKURL:      resolveAssetURL(repoURL, firstNonEmpty(item.APKURL, item.APK), "apk"),
+			IconURL:     resolveAssetURL(repoURL, item.IconURL, "icon"),
+			Language:    firstNonEmpty(language, "en"),
+			Version:     item.Version,
+			VersionCode: item.VersionCode,
+			NSFW:        item.NSFW || item.NSFWLevel > 0,
+			Type:        typeName,
+			SourceIDs:   ids,
+			RepoURL:     repoURL,
 		})
 	}
 	return result, nil

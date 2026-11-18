@@ -10,6 +10,7 @@ type Source struct {
 	Type     string `json:"type"`
 	Class    string `json:"className"`
 	Package  string `json:"pkgName"`
+	Version  string `json:"version"`
 }
 
 func (s Source) IsAnime() bool { return s.Type == "anime" }

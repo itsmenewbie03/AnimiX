@@ -10,12 +10,18 @@ import (
 )
 
 type Service struct {
-	bridge *bridge.Client
+	bridge caller
+}
+
+type caller interface {
+	Call(context.Context, string, map[string]any, any) error
 }
 
 func NewService(client *bridge.Client) *Service {
 	return &Service{bridge: client}
 }
+
+func newService(client caller) *Service { return &Service{bridge: client} }
 
 func (s *Service) Sources(ctx context.Context, extensionDirectory string) ([]Source, error) {
 	var sources []Source

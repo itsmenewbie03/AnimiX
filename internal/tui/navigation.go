@@ -184,6 +184,7 @@ var keyHelpSections = []keyHelpSection{
 		{"c", "Clear active feed filter"},
 		{"x", "Remove selected Resume entry"},
 		{"F5", "Refresh Home"},
+		{"e", "Extensions"},
 		{"d", "Discover with a source"},
 		{"r", "Extension repositories"},
 		{"t", "AniList"},
@@ -194,6 +195,10 @@ var keyHelpSections = []keyHelpSection{
 		{"s", "Change source"},
 		{"c", "Cloudflare source recovery"},
 		{"Space", "Remember selected server"},
+	}},
+	{title: "SOURCE SETTINGS", bindings: [][2]string{
+		{"Enter", "Toggle, edit, or save"},
+		{"Space", "Toggle a multi-select option"},
 	}},
 	{title: "MANGA CHAPTERS", bindings: [][2]string{
 		{"Tab / Shift+Tab", "Next / previous scanlator"},
@@ -212,7 +217,7 @@ var keyHelpSections = []keyHelpSection{
 		{"a", "Add repository"},
 		{"d", "Delete repository or uninstall extension"},
 		{"/", "Filter extensions"},
-		{"l", "Next extension language"},
+		{"L", "Next extension language"},
 		{"c", "Clear extension filters"},
 	}},
 	{title: "TEXT FIELDS", bindings: [][2]string{

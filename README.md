@@ -115,6 +115,7 @@ complete categorized shortcut reference.
 | `x`                                    | Remove the selected Resume entry / sign out of AniList |
 | `F5`                                   | Refresh Home from saved config and AniList           |
 | `d`                                    | Open Discover and search with an installed source    |
+| `e`                                    | Manage installed and available extensions            |
 | `t`                                    | Connect or manage AniList tracking                   |
 | `p`                                    | Manage Discord presence from Home                   |
 | `r`                                    | Manage extension repositories                        |
@@ -306,14 +307,16 @@ go run . --runtime ~/Downloads/anymex_desktop_runtime.jar
 
 ## 🧩 Extensions & Repositories
 
-From the sources screen, press `r` to manage extension repositories. Use `a` to
-add an anime or manga repository, `Enter` to browse it, and `d` to remove it.
-Selecting an available extension downloads its APK and asks the runtime bridge
-to convert it into a desktop JAR.
+Press `e` from Home to open Extensions. Switch between Anime and Manga with
+`1`/`2`, and between Installed and Available with `Tab`. Installed sources show
+their current version and any available update; `Enter` opens source settings,
+`u` updates one package, `U` updates all packages, and `x` uninstalls. Available
+entries install with `Enter`.
 
-While browsing extensions, press `/` to search by name or package, `l` to cycle
-the language filter, and `c` to clear both filters. Installed entries are marked
-`[installed]`; select one and press `d` to unload it and remove its JAR.
+Press `/` to search by source name or package, `L` to cycle the language filter,
+and `c` to clear both filters. Press `r` for repository management; the existing
+Home `r` shortcut remains available. Adding or selecting an available extension
+downloads its APK and asks the runtime bridge to convert it into a desktop JAR.
 
 Installed sources are not shown on Home. Press `d` to open Discover, choose an
 installed source, and search with it. Resume, New Episodes, and Watching remain

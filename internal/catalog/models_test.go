@@ -26,3 +26,14 @@ func TestEpisodeStillDecodesCamelCaseNumber(t *testing.T) {
 		t.Fatalf("episode number = %q, want 3", got)
 	}
 }
+
+func TestSourceDecodesInstalledExtensionVersion(t *testing.T) {
+	t.Parallel()
+	var source Source
+	if err := json.Unmarshal([]byte(`{"id":"1","name":"Fixture","version":"1.2.3","pkgName":"ext.fixture"}`), &source); err != nil {
+		t.Fatal(err)
+	}
+	if source.Version != "1.2.3" || source.Package != "ext.fixture" {
+		t.Fatalf("source metadata = %#v", source)
+	}
+}

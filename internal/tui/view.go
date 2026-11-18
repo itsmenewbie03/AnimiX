@@ -35,8 +35,20 @@ func (m Model) View() string {
 			body.WriteString("\n\n" + helpStyle.Render("r repositories • esc home"))
 		} else {
 			body.WriteString(m.listView(items))
-			body.WriteString("\n" + helpStyle.Render("enter search with source • esc home"))
+			body.WriteString("\n" + helpStyle.Render("enter search • esc home"))
 		}
+	case stageSourcePreferences:
+		body.WriteString(m.sourcePreferencesView())
+	case stagePreferenceList, stagePreferenceMultiSelect, stagePreferenceText:
+		background := m
+		background.stage, background.cursor, background.loading = stageSourcePreferences, m.preferenceIndex, false
+		body.WriteString(background.sourcePreferencesView())
+	case stageExtensions, stageExtensionsSearch:
+		body.WriteString(m.extensionsView())
+	case stageExtensionRemove:
+		background := m
+		background.stage = stageExtensions
+		body.WriteString(background.extensionsView())
 	case stageSearch:
 		body.WriteString("Search with " + titleStyle.Render(m.selectedSource.Name) + "\n\n")
 		if m.loading {
@@ -169,7 +181,7 @@ func (m Model) View() string {
 		}
 		body.WriteString(m.listView(items))
 		body.WriteString(m.listHelp("install/update"))
-		body.WriteString("\n" + helpStyle.Render("d uninstall • / search • l next language • c clear filters"))
+		body.WriteString("\n" + helpStyle.Render("d uninstall • / search • L next language • c clear filters"))
 	case stageExtensionSearch:
 		extensions := m.filteredExtensions()
 		language := firstNonEmpty(strings.ToUpper(m.extensionLanguage), "ALL")
@@ -288,10 +300,17 @@ func (m Model) View() string {
 			body.WriteString("\n" + helpStyle.Render("↑/↓ or j/k move • enter choose • esc no • q quit"))
 		}
 	}
-	if m.availableUpdate.Version != "" && m.stage != stageUpdatePrompt {
+	if m.availableUpdate.Version != "" && m.stage != stageUpdatePrompt &&
+		m.stage != stageExtensions && m.stage != stageExtensionsSearch && m.stage != stageExtensionRemove {
 		body.WriteString("\n\n" + helpStyle.Render("u install AnimiX "+m.availableUpdate.Version))
 	}
 	base := frame(body.String(), width)
+	if m.stage == stagePreferenceList || m.stage == stagePreferenceMultiSelect || m.stage == stagePreferenceText {
+		base = m.preferenceModalView(base)
+	}
+	if m.stage == stageExtensionRemove {
+		base = m.extensionRemoveModalView(base)
+	}
 	base = notification.Overlay(base, m.notifier.View(), width, 1)
 	if m.showKeyHelp {
 		return m.keyHelpView()
@@ -440,7 +459,7 @@ func homeFeedEmptyMessage(feed homeFocus) string {
 
 func (m Model) homeHelp() string {
 	hasItems := m.currentLength() > 0
-	controls := "d discover • r repositories • t AniList • p Discord • f5 refresh • ? help • q quit"
+	controls := "e extensions • d discover • r repositories • t AniList • p Discord • f5 refresh • ? help • q quit"
 	if hasItems {
 		controls = "j/k move • gg/G first/last • enter open • / filter • " + controls
 	}
@@ -535,10 +554,18 @@ func (m Model) listView(items []string) string {
 }
 
 func (m Model) listViewFocused(items []string, focused bool) string {
+	return m.listViewFocusedRows(items, focused, max(5, m.height-10))
+}
+
+func (m Model) listViewRows(items []string, rows int) string {
+	return m.listViewFocusedRows(items, true, rows)
+}
+
+func (m Model) listViewFocusedRows(items []string, focused bool, rows int) string {
 	if len(items) == 0 {
 		return helpStyle.Render("No results.")
 	}
-	available := max(5, m.height-10)
+	available := max(1, rows)
 	start := max(0, m.cursor-available/2)
 	end := min(len(items), start+available)
 	if end-start < available {
@@ -576,6 +603,22 @@ func (m Model) listHelp(action string) string {
 }
 
 func (m Model) breadcrumb() string {
+	if m.isSourcePreferenceStage() {
+		parent := "Discover"
+		if m.sourcePreferencesReturn == stageExtensions {
+			parent = "Extensions"
+		}
+		parts := []string{"Home", parent, m.selectedSource.Name, "Source settings"}
+		if m.stage != stageSourcePreferences {
+			if preference, ok := m.selectedPreference(); ok {
+				parts = append(parts, firstNonEmpty(preference.Title, preference.Key))
+			}
+		}
+		return strings.Join(parts, " › ")
+	}
+	if m.stage == stageExtensions || m.stage == stageExtensionsSearch || m.stage == stageExtensionRemove {
+		return "Home › Extensions"
+	}
 	if m.stage == stageDiscord || m.stage == stageDiscordToken {
 		return "Home › Discord"
 	}

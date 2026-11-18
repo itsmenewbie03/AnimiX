@@ -60,6 +60,13 @@ const (
 	stageDiscord
 	stageDiscordToken
 	stageCloudflareSource
+	stageSourcePreferences
+	stagePreferenceList
+	stagePreferenceMultiSelect
+	stagePreferenceText
+	stageExtensions
+	stageExtensionsSearch
+	stageExtensionRemove
 )
 
 type cloudflareOperation uint8
@@ -206,6 +213,19 @@ type Model struct {
 	updateEvents          chan updateEventMsg
 	updateState           appupdate.ProbeProgress
 	updatePercent         float64
+
+	preferenceInput         textinput.Model
+	sourcePreferences       []catalog.Preference
+	preferenceIndex         int
+	preferenceSelections    map[string]bool
+	discoverSourceCursor    int
+	sourcePreferencesReturn stage
+	repositoriesReturn      stage
+	extensionCatalog        []repository.Extension
+	extensionType           string
+	extensionsInstalled     bool
+	extensionRefreshing     bool
+	pendingExtension        repository.Extension
 }
 
 type UpdateService interface {
@@ -396,6 +416,12 @@ type pagesMsg struct {
 	err   error
 }
 
+type sourcePreferencesMsg struct {
+	items  []catalog.Preference
+	cursor int
+	err    error
+}
+
 type mangaReaderOpenedMsg struct {
 	session mangareader.OpenedSession
 	entry   appconfig.MangaReadingEntry
@@ -427,6 +453,12 @@ type repositoriesMsg struct {
 type availableExtensionsMsg struct {
 	items []repository.Extension
 	err   error
+}
+
+type extensionsMsg struct {
+	items   []repository.Extension
+	warning string
+	err     error
 }
 
 type (
@@ -531,6 +563,10 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 	userAgentInput.Placeholder = "Browser User-Agent used to obtain the cookie"
 	userAgentInput.CharLimit = 2048
 	userAgentInput.Width = 70
+	preferenceInput := textinput.New()
+	preferenceInput.Placeholder = "Preference value"
+	preferenceInput.CharLimit = 16384
+	preferenceInput.Width = 70
 	spin := spinner.New()
 	spin.Spinner = spinner.MiniDot
 	spin.Style = lipgloss.NewStyle().Foreground(accent)
@@ -611,6 +647,8 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		player:               playerExecutable,
 		stage:                stageSources,
 		homeType:             "anime",
+		extensionType:        "anime",
+		extensionsInstalled:  true,
 		homeFocus:            homeFocusNone,
 		mangaFeed:            mangaFeedResume,
 		resumeAniListSync:    appconfig.ResumeAniListSyncFilter,
@@ -625,6 +663,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		alternativeTitle:     altTitle,
 		cookieInput:          cookieInput,
 		userAgentInput:       userAgentInput,
+		preferenceInput:      preferenceInput,
 		newEpisodesList:      newEpisodes,
 		resumeWatchingList:   resumeWatching,
 		continueWatchingList: continueWatching,
@@ -632,6 +671,7 @@ func New(service *catalog.Service, store *appconfig.Store, extensionDirectory, p
 		mangaTrackingList:    mangaTracking,
 		mangaReaderSessions:  make(map[string]appconfig.MangaReadingEntry),
 		pendingMangaProgress: make(map[string]mangareader.ProgressEvent),
+		preferenceSelections: make(map[string]bool),
 		episodeList:          episodes,
 	}
 	for _, option := range options {
@@ -678,6 +718,7 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.alternativeTitle.Width = max(20, min(80, msg.Width-8))
 		m.cookieInput.Width = max(20, min(80, msg.Width-8))
 		m.userAgentInput.Width = max(20, min(80, msg.Width-8))
+		m.preferenceInput.Width = max(20, min(80, msg.Width-8))
 		m.updateProgress.Width = max(20, min(60, msg.Width-12))
 		m.resizeNewEpisodesList()
 		m.resizeResumeWatchingList()
@@ -917,6 +958,17 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case sourcePreferencesMsg:
+		m.loading, m.err = false, msg.err
+		if msg.err == nil {
+			m.sourcePreferences = msg.items
+			m.stage = stageSourcePreferences
+			m.cursor = min(msg.cursor, max(0, len(msg.items)-1))
+			if msg.cursor == 0 && len(msg.items) > 0 && !msg.items[m.cursor].Editable() {
+				m.cursor = firstEditablePreference(msg.items, m.cursor)
+			}
+		}
+		return m, nil
 	case mangaReaderOpenedMsg:
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
@@ -1106,6 +1158,23 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.stage, m.cursor = stageAvailableExtensions, 0
 		}
 		return m, nil
+	case extensionsMsg:
+		m.loading, m.extensionRefreshing, m.err = false, false, msg.err
+		if msg.err == nil {
+			m.extensionCatalog = msg.items
+			m.cursor = min(m.cursor, max(0, m.currentLength()-1))
+			if msg.warning != "" {
+				m.statusTitle = "Extensions partially refreshed"
+				m.status = msg.warning
+			}
+		}
+		return m, nil
+	case extensionBatchMsg:
+		m.loading, m.err = true, msg.err
+		if msg.err == nil {
+			m.status = "Extensions updated"
+		}
+		return m, m.loadSources()
 	case repositorySavedMsg:
 		m.loading, m.err = false, msg.err
 		if msg.err == nil {
@@ -1121,17 +1190,11 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case extensionInstalledMsg:
-		m.loading, m.err = false, msg.err
-		if msg.err == nil {
-			return m, m.loadSources()
-		}
-		return m, nil
+		m.loading, m.err = true, msg.err
+		return m, m.loadSources()
 	case extensionRemovedMsg:
-		m.loading, m.err = false, msg.err
-		if msg.err == nil {
-			return m, m.loadSources()
-		}
-		return m, nil
+		m.loading, m.err = true, msg.err
+		return m, m.loadSources()
 	case aniListLibraryMsg:
 		if !msg.background {
 			m.loading = false
@@ -1326,6 +1389,11 @@ func (m Model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.alternativeTitle, cmd = m.alternativeTitle.Update(message)
 		return m, cmd
 	}
+	if m.stage == stagePreferenceText {
+		var cmd tea.Cmd
+		m.preferenceInput, cmd = m.preferenceInput.Update(message)
+		return m, cmd
+	}
 	return m, m.notifier.Update(message)
 }
 
@@ -1384,6 +1452,12 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.loading {
 		return m, nil
 	}
+	if m.isSourcePreferenceStage() {
+		return m.handleSourcePreferenceKey(key)
+	}
+	if m.stage == stageExtensions || m.stage == stageExtensionsSearch || m.stage == stageExtensionRemove {
+		return m.handleExtensionsKey(key)
+	}
 	if m.stage == stageSources {
 		if active := m.activeHomeList(); active != nil && active.SettingFilter() {
 			return m, m.updateHomeFilter(key)
@@ -1396,7 +1470,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.stage == stageAutoPlayPrompt && m.autoPlay.phase == autoPlayPrompting {
 		return m.handleAutoPlayPromptKey(key)
 	}
-	if strings.ToLower(key.String()) == "u" && m.availableUpdate.Version != "" && !m.acceptsTextInput() {
+	if strings.ToLower(key.String()) == "u" && m.availableUpdate.Version != "" && !m.acceptsTextInput() &&
+		m.stage != stageExtensions && m.stage != stageExtensionsSearch && m.stage != stageExtensionRemove {
 		m.updateReturn = m.stage
 		m.stage = stageUpdatePrompt
 		m.loading, m.err = true, nil
@@ -1709,7 +1784,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if key.String() == "l" && m.stage == stageAvailableExtensions {
+		if key.String() == "L" && m.stage == stageAvailableExtensions {
 			m.cycleExtensionLanguage()
 			m.cursor = 0
 			return m, nil
@@ -1760,8 +1835,30 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		if m.stage == stageSources || m.stage == stageDiscoverSources {
+			m.repositoriesReturn = m.stage
 			m.stage, m.cursor, m.err = stageRepositories, 0, nil
 			return m, nil
+		}
+	case "e":
+		if m.stage == stageSources {
+			m.stage, m.cursor, m.err = stageExtensions, 0, nil
+			m.extensionType, m.extensionsInstalled = m.homeType, true
+			m.loading, m.extensionRefreshing = true, true
+			return m, tea.Batch(m.spinner.Tick, m.loadExtensionCatalog())
+		}
+	case "p":
+		if m.stage == stageDiscoverSources {
+			sources := m.homeSources()
+			if len(sources) == 0 {
+				return m, nil
+			}
+			m.discoverSourceCursor = m.cursor
+			m.selectedSource = sources[m.cursor]
+			m.sourcePreferences = nil
+			m.cursor, m.loading, m.err = 0, true, nil
+			m.stage = stageSourcePreferences
+			m.sourcePreferencesReturn = stageDiscoverSources
+			return m, tea.Batch(m.spinner.Tick, m.loadSourcePreferences())
 		}
 	case "f5":
 		if m.stage == stageSources {
@@ -1857,7 +1954,7 @@ func (m Model) acceptsTextInput() bool {
 	}
 	switch m.stage {
 	case stageSearch, stageRepositoryAdd, stageExtensionSearch, stageAniListToken, stageDiscordToken,
-		stageAlternativeTitle, stageCloudflareCookie, stageCloudflareUserAgent:
+		stageAlternativeTitle, stageCloudflareCookie, stageCloudflareUserAgent, stagePreferenceText, stageExtensionsSearch:
 		return true
 	default:
 		return false
@@ -2545,7 +2642,10 @@ func (m *Model) back() {
 		}
 		m.mangaReaderReturnHome = false
 	case stageRepositories:
-		m.stage = stageSources
+		m.stage = m.repositoriesReturn
+		if m.stage != stageExtensions && m.stage != stageDiscoverSources {
+			m.stage = stageSources
+		}
 	case stageDiscoverSources:
 		m.stage = stageSources
 	case stageRepositoryAdd:
@@ -2636,6 +2736,11 @@ func (m Model) currentLength() int {
 		return len(m.trackingEntries)
 	case stageEpisodeSource, stageCloudflareSource:
 		return len(m.resolutionSources())
+	case stageExtensions, stageExtensionsSearch:
+		if m.extensionsInstalled {
+			return len(m.installedExtensionSources())
+		}
+		return len(m.availableExtensionEntries())
 	default:
 		return 0
 	}
